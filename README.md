@@ -2,6 +2,14 @@
 
 Aplicativo Android para organizar treinos de musculação e cardio, acompanhar cargas e preservar o histórico de evolução.
 
+## Baixar e instalar
+
+Baixe o instalador Android (APK) diretamente deste repositório:
+
+- [Gym App v0.1.0 (APK de teste)](releases/GymApp-v0.1.0-debug.apk)
+
+É uma compilação de depuração para instalação direta; o Android pode solicitar autorização para instalar apps desta fonte. O APK não é distribuído pela Play Store.
+
 ## Estado atual
 
 A versão atual implementa o fluxo principal do aplicativo:
