@@ -71,6 +71,7 @@ interface GymDao {
     @Query("DELETE FROM workout_exercises WHERE workoutId = :workoutId") suspend fun deleteWorkoutExercises(workoutId: String)
     @Query("DELETE FROM workouts WHERE id = :workoutId") suspend fun deleteWorkout(workoutId: String)
     @Query("UPDATE workout_exercises SET restSeconds = :restSeconds, setCount = :setCount WHERE workoutId = :workoutId AND exerciseId = :exerciseId") suspend fun updateWorkoutExercise(workoutId: String, exerciseId: String, restSeconds: Int, setCount: Int)
+    @Query("UPDATE workout_exercises SET restSeconds = :restSeconds, setCount = :setCount, plannedReps = :plannedReps WHERE workoutId = :workoutId AND exerciseId = :exerciseId") suspend fun updateWorkoutExerciseDetails(workoutId: String, exerciseId: String, restSeconds: Int, setCount: Int, plannedReps: String)
     @Query("UPDATE workout_exercises SET plannedLoadsCsv = :loads WHERE workoutId = :workoutId AND exerciseId = :exerciseId") suspend fun updatePlannedLoads(workoutId: String, exerciseId: String, loads: String)
     @Query("UPDATE workout_sessions SET finishedAt = :finishedAt, completed = 1 WHERE id = :sessionId") suspend fun finishSession(sessionId: String, finishedAt: Long)
 }

@@ -184,6 +184,10 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
         viewModelScope.launch { database.dao().updateWorkoutExercise(workoutId, exerciseId, restSeconds, setCount) }
     }
 
+    fun updateWorkoutExerciseDetails(workoutId: String, exerciseId: String, restSeconds: Int, setCount: Int, plannedReps: String) {
+        viewModelScope.launch { database.dao().updateWorkoutExerciseDetails(workoutId, exerciseId, restSeconds, setCount, plannedReps) }
+    }
+
     fun createWorkout(title: String, subtitle: String) {
         viewModelScope.launch {
             val dao = database.dao()
@@ -319,7 +323,7 @@ fun GymApp(viewModel: GymViewModel) {
             } else if (screen == "workouts") {
                 WorkoutsScreen(workouts = workouts, onBack = { screen = "home" }, onOpenWorkout = { id -> viewModel.selectWorkout(id); viewModel.startSession(id); screen = "workout" }, onEditWorkout = { id -> viewModel.selectWorkout(id); screen = "edit" }, onDeleteWorkout = viewModel::deleteWorkout, onCreateWorkout = viewModel::createWorkout)
             } else if (screen == "edit" && selectedId != null) {
-                EditWorkoutScreen(workout = workouts.firstOrNull { it.id == selectedId }, exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value, catalog = viewModel.catalog.collectAsStateWithLifecycle(initialValue = emptyList()).value, onBack = { screen = "workouts" }, onAddExercise = { viewModel.addExercise(selectedId!!, it) }, onSave = { item, rest, sets -> viewModel.updateWorkoutExercise(selectedId!!, item.exerciseId, rest, sets) })
+                EditWorkoutScreen(workout = workouts.firstOrNull { it.id == selectedId }, exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value, catalog = viewModel.catalog.collectAsStateWithLifecycle(initialValue = emptyList()).value, onBack = { screen = "workouts" }, onAddExercise = { viewModel.addExercise(selectedId!!, it) }, onSave = { item, rest, sets, reps -> viewModel.updateWorkoutExerciseDetails(selectedId!!, item.exerciseId, rest, sets, reps) })
             } else if (screen == "history") {
                 HistoryScreen(
                     viewModel = viewModel,
@@ -558,7 +562,7 @@ private fun EditWorkoutScreen(
     catalog: List<ExerciseEntity>,
     onBack: () -> Unit,
     onAddExercise: (String) -> Unit,
-    onSave: (WorkoutExerciseRow, Int, Int) -> Unit
+    onSave: (WorkoutExerciseRow, Int, Int, String) -> Unit
 ) {
     var showAddExercise by remember { mutableStateOf(false) }
     Scaffold(containerColor = AppBackground) { padding ->
@@ -581,6 +585,7 @@ private fun EditWorkoutScreen(
                     val item = exercises[index]
                     var restText by remember(item.exerciseId, item.restSeconds) { mutableStateOf(item.restSeconds.toString()) }
                     var setsText by remember(item.exerciseId, item.setCount) { mutableStateOf(item.setCount.toString()) }
+                    var repsText by remember(item.exerciseId, item.plannedReps) { mutableStateOf(item.plannedReps) }
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color.White),
                         shape = RoundedCornerShape(16.dp)
@@ -589,6 +594,14 @@ private fun EditWorkoutScreen(
                             Text(item.name, fontWeight = FontWeight.Bold)
                             Text(item.muscleGroup, color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
+                                OutlinedTextField(
+                                    value = repsText,
+                                    onValueChange = { repsText = it.take(18) },
+                                    label = { Text("Repetições") },
+                                    placeholder = { Text("10–12") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1.35f)
+                                )
                                 OutlinedTextField(
                                     value = restText,
                                     onValueChange = { restText = it.filter(Char::isDigit).take(4) },
@@ -608,7 +621,7 @@ private fun EditWorkoutScreen(
                                 onClick = {
                                     val rest = restText.toIntOrNull()?.coerceIn(0, 3600) ?: item.restSeconds
                                     val sets = setsText.toIntOrNull()?.coerceIn(1, 20) ?: item.setCount
-                                    onSave(item, rest, sets)
+                                    onSave(item, rest, sets, repsText.ifBlank { item.plannedReps })
                                     restText = rest.toString()
                                     setsText = sets.toString()
                                 },
@@ -792,7 +805,7 @@ private fun ExerciseCard(
     }
     Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
         Column(Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().background(SoftGreen, RoundedCornerShape(12.dp)).clickable(onClick = onToggle).padding(horizontal = 10.dp, vertical = 4.dp)) {
                 Text(item.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 TextButton(
                     onClick = { if (item.restSeconds > 0) restRemaining = item.restSeconds },
@@ -818,8 +831,9 @@ private fun ExerciseCard(
                         reps = item.plannedReps,
                         load = effectivePreset?.let { if (it % 1.0 == 0.0) "${it.toInt()} kg" else "$it kg" }.orEmpty(),
                         completed = false,
-                        onLoadChanged = { value -> value.toDoubleOrNull()?.let { onLoadChanged(setIndex + 1, it) } }
-                        , onSetChanged = { loadKg, completed, increaseMarked -> onSetChanged(setIndex + 1, loadKg, completed, increaseMarked) }
+                        onLoadChanged = { value -> value.toDoubleOrNull()?.let { onLoadChanged(setIndex + 1, it) } },
+                        rowColor = if (setIndex % 2 == 0) Color(0xFFF8FBF9) else Color(0xFFEAF5EF),
+                        onSetChanged = { loadKg, completed, increaseMarked -> onSetChanged(setIndex + 1, loadKg, completed, increaseMarked) }
                     )
                 }
             }
@@ -834,19 +848,20 @@ private fun SetRow(
     load: String,
     completed: Boolean,
     onLoadChanged: (String) -> Unit,
+    rowColor: Color,
     onSetChanged: (Double?, Boolean, Boolean) -> Unit
 ) {
     var enteredLoad by remember(load) { mutableStateOf(load) }
     var isCompleted by remember { mutableStateOf(completed) }
     var increaseMarked by remember { mutableStateOf(false) }
     fun persist() = onSetChanged(enteredLoad.removeSuffix(" kg").trim().toDoubleOrNull(), isCompleted, increaseMarked)
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().background(rowColor, RoundedCornerShape(10.dp)).padding(horizontal = 6.dp, vertical = 6.dp)) {
         Text("$number", modifier = Modifier.width(32.dp), color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
         Text(reps, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(
             value = enteredLoad,
             onValueChange = { enteredLoad = it; onLoadChanged(it.removeSuffix(" kg").trim()) },
-            modifier = Modifier.width(72.dp),
+            modifier = Modifier.width(116.dp),
             singleLine = true,
             textStyle = MaterialTheme.typography.labelSmall
         )
