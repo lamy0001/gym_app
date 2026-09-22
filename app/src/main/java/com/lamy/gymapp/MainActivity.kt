@@ -36,6 +36,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -45,6 +46,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -129,14 +131,86 @@ fun GymApp(viewModel: GymViewModel) {
                     exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value,
                     onBack = { screen = "home" }
                 )
+            } else if (screen == "settings") {
+                SettingsScreen(onBack = { screen = "home" })
             } else {
                 HomeScreen(
                     workouts = workouts,
                     onOpenWorkout = { id -> viewModel.selectWorkout(id); screen = "workout" },
-                    onSettings = { }
+                    onSettings = { screen = "settings" }
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SettingsScreen(onBack: () -> Unit) {
+    var remindersEnabled by rememberSaveable { mutableStateOf(true) }
+    var selectedRest by rememberSaveable { mutableIntStateOf(90) }
+
+    Scaffold(containerColor = AppBackground) { padding ->
+        Column(
+            Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.Default.ArrowBack, contentDescription = "Voltar")
+                }
+                Column(Modifier.weight(1f)) {
+                    Text("PREFERÊNCIAS", color = Green, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    Text("Configurações", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            SettingsRow("Tema visual", "Claro")
+            SettingsRow("Unidade de peso", "kg")
+            SettingsRow("Descanso padrão", "$selectedRest s")
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Lembrete do treino", fontWeight = FontWeight.Bold)
+                    Text("07:00 · Segunda a sexta", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = remindersEnabled, onCheckedChange = { remindersEnabled = it })
+            }
+            Text("Dias programados", color = Green, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+            Text("Sábado e domingo não quebram sua sequência.", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 12.dp)) {
+                listOf("S", "T", "Q", "Q", "S", "S", "D").forEachIndexed { index, day ->
+                    Surface(
+                        color = if (index < 5) Green else Color(0xFFE5EFEA),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(day, color = if (index < 5) Color.White else Color(0xFF71877E), modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp), fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            Text("Tempo de descanso", color = Green, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 10.dp)) {
+                listOf(60, 90, 120).forEach { seconds ->
+                    TextButton(onClick = { selectedRest = seconds }) {
+                        Text("$seconds s", color = if (selectedRest == seconds) Green else Color(0xFF60786D), fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            SettingsRow("Sons e vibração", "Ativo")
+            SettingsRow("Editar treinos", "Abrir")
+        }
+    }
+}
+
+@Composable
+private fun SettingsRow(title: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        Text(value, color = Green, style = MaterialTheme.typography.bodySmall)
     }
 }
 

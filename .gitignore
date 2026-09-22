@@ -7,6 +7,7 @@ build/
 **/build/
 local.properties
 .toolchain/
+backup-device-data/
 .idea/
 captures/
 .externalNativeBuild/
