@@ -4,7 +4,7 @@ Aplicativo Android para organizar treinos de musculação e cardio, acompanhar c
 
 ## Estado atual
 
-A primeira fundação do aplicativo já está criada:
+A versão atual implementa o fluxo principal do aplicativo:
 
 - Kotlin + Jetpack Compose.
 - Tema claro.
@@ -15,6 +15,13 @@ A primeira fundação do aplicativo já está criada:
 - Exercícios identificados globalmente para compartilhar cargas entre treinos.
 - Carga utilizada anteriormente disponível como preset no próximo treino.
 - Edição da carga durante a execução do exercício.
+- Cinco treinos iniciais completos: Upper, Lower, Cardio, Upper 2 e Lower 2.
+- Sessões e séries persistidas, com check e sinalização “+” de aumento de carga.
+- Descanso editável por exercício e cronômetro acionável no card.
+- Editor de séries/descanso e exclusão de treinos com confirmação.
+- Histórico real de sessões e gráfico de carga proporcional ao próprio exercício.
+- Configurações persistidas, lembrete recorrente em dias úteis e horário editável.
+- Exportação e restauração de backup JSON pelo seletor de arquivos do Android.
 
 ## Arquitetura
 
@@ -34,6 +41,8 @@ O banco separa:
 - `workouts`: treinos cadastrados.
 - `workout_exercises`: exercícios vinculados a cada treino.
 - `exercise_load_profiles`: última carga utilizada por exercício e série.
+- `workout_sessions` e `session_sets`: sessões, séries concluídas e evolução.
+- `app_settings`: preferências e lembretes.
 
 Isso permite que, por exemplo, a “Puxada supinada” compartilhe a carga entre o Treino 1 e o Treino 3.
 
@@ -77,12 +86,8 @@ Registros que devem ser preservados:
 - Treinos editados pelo usuário.
 - Lembretes e dias programados.
 
-## Próximos passos
+## Backup
 
-1. Implementar histórico de sessões.
-2. Registrar checkboxes de série e sinalização de aumento de carga.
-3. Adicionar edição completa de treinos.
-4. Adicionar descanso por exercício.
-5. Implementar lembretes e dias programados.
-6. Criar histórico com gráficos de frequência e carga por exercício.
-7. Adicionar exportação e restauração de backup.
+Na tela Configurações, “Exportar” gera um arquivo JSON com catálogo, treinos, cargas,
+sessões, histórico e preferências. “Restaurar” faz upsert desses registros, preservando
+dados locais que não estejam no arquivo.

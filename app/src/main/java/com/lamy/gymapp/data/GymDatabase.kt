@@ -37,9 +37,18 @@ interface GymDao {
     @Query("SELECT COUNT(*) FROM workout_sessions WHERE completed = 1") fun observeCompletedSessionCount(): Flow<Int>
     @Query("SELECT * FROM session_sets WHERE exerciseId = :exerciseId AND completed = 1 AND loadKg IS NOT NULL ORDER BY rowid") fun observeExerciseHistory(exerciseId: String): Flow<List<SessionSetEntity>>
     @Query("SELECT * FROM app_settings") fun observeSettings(): Flow<List<AppSettingEntity>>
+    @Query("SELECT * FROM exercises") suspend fun allExercises(): List<ExerciseEntity>
+    @Query("SELECT * FROM workouts") suspend fun allWorkouts(): List<WorkoutEntity>
+    @Query("SELECT * FROM workout_exercises") suspend fun allWorkoutExercises(): List<WorkoutExerciseEntity>
+    @Query("SELECT * FROM exercise_load_profiles") suspend fun allLoadProfiles(): List<ExerciseLoadProfileEntity>
+    @Query("SELECT * FROM workout_sessions") suspend fun allSessions(): List<WorkoutSessionEntity>
+    @Query("SELECT * FROM session_sets") suspend fun allSessionSets(): List<SessionSetEntity>
+    @Query("SELECT * FROM app_settings") suspend fun allSettings(): List<AppSettingEntity>
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertExercises(items: List<ExerciseEntity>)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertExercisesIfMissing(items: List<ExerciseEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertWorkouts(items: List<WorkoutEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertWorkoutExercises(items: List<WorkoutExerciseEntity>)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertWorkoutExercisesIfMissing(items: List<WorkoutExerciseEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun saveLoadProfile(items: List<ExerciseLoadProfileEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertSession(session: WorkoutSessionEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun saveSessionSet(set: SessionSetEntity)
@@ -82,4 +91,41 @@ suspend fun GymDao.seedIfEmpty() {
         WorkoutExerciseEntity("lower-2", "plantar-arch", 1, 30, "15–20"), WorkoutExerciseEntity("lower-2", "hip-thrust", 2, 120, "10–12", 3, "55,55,55"), WorkoutExerciseEntity("lower-2", "hack-squat", 3, 120, "10–12"), WorkoutExerciseEntity("lower-2", "leg-extension", 4, 90, "10–12"), WorkoutExerciseEntity("lower-2", "leg-curl", 5, 90, "10–12")
     )
     insertExercises(exercises); insertWorkouts(workouts); insertWorkoutExercises(links)
+}
+
+suspend fun GymDao.ensureCatalog() {
+    insertExercisesIfMissing(listOf(
+        ExerciseEntity("scapula-cadence", "Aula posicionamento das escápulas e cadência", "Preparação"),
+        ExerciseEntity("foot-spacing", "Aula afastamento dos pés", "Preparação"),
+        ExerciseEntity("foot-support", "Aula apoio dos pés", "Preparação"),
+        ExerciseEntity("arch-class", "Aula arco plantar", "Preparação"),
+        ExerciseEntity("bracing", "Manobra do bracing", "Preparação"),
+        ExerciseEntity("triceps-french", "Tríceps francês banco inclinado 30°", "Tríceps"),
+        ExerciseEntity("triceps-forehead", "Tríceps testa halteres", "Tríceps"),
+        ExerciseEntity("close-grip-dumbbell", "Supino fechado halteres", "Peito"),
+        ExerciseEntity("machine-bench", "Supino reto máquina", "Peito"),
+        ExerciseEntity("standing-calf", "Panturrilha em pé", "Panturrilha"),
+        ExerciseEntity("scott-curl", "Rosca Scott máquina", "Bíceps"),
+        ExerciseEntity("dumbbell-curl", "Rosca halteres", "Bíceps")
+    ))
+    insertWorkoutExercisesIfMissing(listOf(
+        WorkoutExerciseEntity("upper-1", "scapula-cadence", 11, 45, "10–12", 2),
+        WorkoutExerciseEntity("upper-1", "triceps-french", 12, 75, "10–12", 3),
+        WorkoutExerciseEntity("lower-1", "foot-spacing", 8, 30, "0", 1),
+        WorkoutExerciseEntity("lower-1", "foot-support", 9, 30, "0", 1),
+        WorkoutExerciseEntity("lower-1", "arch-class", 10, 30, "0", 1),
+        WorkoutExerciseEntity("lower-1", "dumbbell-curl", 11, 60, "10–12", 3),
+        WorkoutExerciseEntity("upper-2", "bracing", 5, 45, "0", 1),
+        WorkoutExerciseEntity("upper-2", "scapula-cadence", 6, 45, "10–12", 2),
+        WorkoutExerciseEntity("upper-2", "bosu-crunch", 7, 60, "10–12", 3),
+        WorkoutExerciseEntity("upper-2", "machine-bench", 8, 90, "10–12", 3),
+        WorkoutExerciseEntity("upper-2", "close-grip-dumbbell", 9, 90, "10–12", 3),
+        WorkoutExerciseEntity("upper-2", "lateral-raise", 10, 60, "10–12", 3),
+        WorkoutExerciseEntity("upper-2", "triceps-forehead", 11, 75, "10–12", 3),
+        WorkoutExerciseEntity("lower-2", "foot-spacing", 6, 30, "0", 1),
+        WorkoutExerciseEntity("lower-2", "foot-support", 7, 30, "0", 1),
+        WorkoutExerciseEntity("lower-2", "arch-class", 8, 30, "0", 1),
+        WorkoutExerciseEntity("lower-2", "standing-calf", 9, 90, "10–12", 3),
+        WorkoutExerciseEntity("lower-2", "scott-curl", 10, 75, "10–12", 3)
+    ))
 }

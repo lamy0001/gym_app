@@ -1,9 +1,18 @@
 package com.lamy.gymapp
 
 import android.os.Bundle
+import android.content.Context
+import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Intent
+import android.os.Build
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -32,6 +41,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -55,6 +65,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -64,16 +75,56 @@ import com.lamy.gymapp.data.GymDatabase
 import com.lamy.gymapp.data.WorkoutEntity
 import com.lamy.gymapp.data.WorkoutExerciseRow
 import com.lamy.gymapp.data.seedIfEmpty
+import com.lamy.gymapp.data.ensureCatalog
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.delay
 import java.util.UUID
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 
 private val Green = Color(0xFF19B987)
 private val SoftGreen = Color(0xFFD9F6E9)
 private val AppBackground = Color(0xFFF4F7F5)
+
+private const val ReminderRequestCode = 4107
+
+private fun scheduleReminder(context: Context, enabled: Boolean, time: String) {
+    val intent = Intent(context, ReminderReceiver::class.java)
+    val pending = PendingIntent.getBroadcast(context, ReminderRequestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    val alarm = context.getSystemService(AlarmManager::class.java)
+    alarm.cancel(pending)
+    if (!enabled) return
+    val parts = time.split(":")
+    val hour = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(0, 23) ?: 7
+    val minute = parts.getOrNull(1)?.toIntOrNull()?.coerceIn(0, 59) ?: 0
+    val next = java.util.Calendar.getInstance().apply {
+        set(java.util.Calendar.HOUR_OF_DAY, hour)
+        set(java.util.Calendar.MINUTE, minute)
+        set(java.util.Calendar.SECOND, 0)
+        set(java.util.Calendar.MILLISECOND, 0)
+        if (timeInMillis <= System.currentTimeMillis()) add(java.util.Calendar.DAY_OF_YEAR, 1)
+    }
+    alarm.setInexactRepeating(AlarmManager.RTC_WAKEUP, next.timeInMillis, AlarmManager.INTERVAL_DAY, pending)
+}
+
+class ReminderReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent?) {
+        val day = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_WEEK)
+        if (day == java.util.Calendar.SATURDAY || day == java.util.Calendar.SUNDAY) return
+        val manager = context.getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(NotificationChannel("workout_reminders", "Lembretes de treino", NotificationManager.IMPORTANCE_DEFAULT))
+        val notification = androidx.core.app.NotificationCompat.Builder(context, "workout_reminders")
+            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setContentTitle("Hora do treino")
+            .setContentText("Seu treino programado está esperando por você.")
+            .setAutoCancel(true)
+            .build()
+        runCatching { manager.notify(4107, notification) }
+    }
+}
 
 class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<GymViewModel> {
@@ -82,6 +133,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 4108)
+        viewModel.syncReminder(this)
         setContent { GymApp(viewModel) }
     }
 }
@@ -95,7 +148,7 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
     private val _activeSessionId = MutableStateFlow<String?>(null)
     val activeSessionId: StateFlow<String?> = _activeSessionId
 
-    init { viewModelScope.launch { database.dao().seedIfEmpty() } }
+    init { viewModelScope.launch { database.dao().seedIfEmpty(); database.dao().ensureCatalog() } }
 
     fun selectWorkout(id: String) { _selectedWorkoutId.value = id }
 
@@ -133,6 +186,52 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
 
     fun saveSetting(key: String, value: String) {
         viewModelScope.launch { database.dao().saveSetting(com.lamy.gymapp.data.AppSettingEntity(key, value)) }
+    }
+
+    fun syncReminder(context: Context) {
+        viewModelScope.launch {
+            val values = database.dao().allSettings().associate { it.key to it.value }
+            scheduleReminder(context, values["remindersEnabled"] != "false", values["reminderTime"] ?: "07:00")
+        }
+    }
+
+    fun exportBackup(context: Context, uri: android.net.Uri, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val dao = database.dao()
+            val root = JSONObject().put("format", "gym-app-backup").put("version", 1)
+            fun array(block: JSONArray.() -> Unit) = JSONArray().apply(block)
+            val exercises = dao.allExercises(); val workouts = dao.allWorkouts(); val links = dao.allWorkoutExercises(); val profiles = dao.allLoadProfiles(); val sessions = dao.allSessions(); val sessionSets = dao.allSessionSets(); val settings = dao.allSettings()
+            root.put("exercises", array { exercises.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("muscleGroup", it.muscleGroup)) } })
+            root.put("workouts", array { workouts.forEach { put(JSONObject().put("id", it.id).put("title", it.title).put("subtitle", it.subtitle).put("sortOrder", it.sortOrder)) } })
+            root.put("workoutExercises", array { links.forEach { put(JSONObject().put("workoutId", it.workoutId).put("exerciseId", it.exerciseId).put("sortOrder", it.sortOrder).put("restSeconds", it.restSeconds).put("plannedReps", it.plannedReps).put("setCount", it.setCount).put("plannedLoadsCsv", it.plannedLoadsCsv)) } })
+            root.put("loadProfiles", array { profiles.forEach { put(JSONObject().put("exerciseId", it.exerciseId).put("setIndex", it.setIndex).put("lastUsedLoadKg", it.lastUsedLoadKg)) } })
+            root.put("sessions", array { sessions.forEach { put(JSONObject().put("id", it.id).put("workoutId", it.workoutId).put("startedAt", it.startedAt).put("finishedAt", it.finishedAt ?: JSONObject.NULL).put("completed", it.completed)) } })
+            root.put("sessionSets", array { sessionSets.forEach { put(JSONObject().put("id", it.id).put("sessionId", it.sessionId).put("exerciseId", it.exerciseId).put("setIndex", it.setIndex).put("reps", it.reps ?: JSONObject.NULL).put("loadKg", it.loadKg ?: JSONObject.NULL).put("completed", it.completed).put("increaseMarked", it.increaseMarked)) } })
+            root.put("settings", array { settings.forEach { put(JSONObject().put("key", it.key).put("value", it.value)) } })
+            val success = runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(root.toString(2).toByteArray()) } != null }.getOrDefault(false)
+            onDone(success)
+        }
+    }
+
+    fun importBackup(context: Context, uri: android.net.Uri, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val success = runCatching {
+                val json = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("backup vazio")
+                val root = JSONObject(json)
+                require(root.optString("format") == "gym-app-backup")
+                val dao = database.dao()
+                val exercises = (0 until root.getJSONArray("exercises").length()).map { val o = root.getJSONArray("exercises").getJSONObject(it); com.lamy.gymapp.data.ExerciseEntity(o.getString("id"), o.getString("name"), o.getString("muscleGroup")) }
+                val workouts = (0 until root.getJSONArray("workouts").length()).map { val o = root.getJSONArray("workouts").getJSONObject(it); WorkoutEntity(o.getString("id"), o.getString("title"), o.getString("subtitle"), o.getInt("sortOrder")) }
+                val links = (0 until root.getJSONArray("workoutExercises").length()).map { val o = root.getJSONArray("workoutExercises").getJSONObject(it); com.lamy.gymapp.data.WorkoutExerciseEntity(o.getString("workoutId"), o.getString("exerciseId"), o.getInt("sortOrder"), o.getInt("restSeconds"), o.getString("plannedReps"), o.optInt("setCount", 3), o.optString("plannedLoadsCsv", "")) }
+                val profiles = (0 until root.getJSONArray("loadProfiles").length()).map { val o = root.getJSONArray("loadProfiles").getJSONObject(it); com.lamy.gymapp.data.ExerciseLoadProfileEntity(o.getString("exerciseId"), o.getInt("setIndex"), o.getDouble("lastUsedLoadKg")) }
+                val sessions = (0 until root.getJSONArray("sessions").length()).map { val o = root.getJSONArray("sessions").getJSONObject(it); com.lamy.gymapp.data.WorkoutSessionEntity(o.getString("id"), o.getString("workoutId"), o.getLong("startedAt"), if (o.isNull("finishedAt")) null else o.getLong("finishedAt"), o.getBoolean("completed")) }
+                val sessionSets = (0 until root.getJSONArray("sessionSets").length()).map { val o = root.getJSONArray("sessionSets").getJSONObject(it); com.lamy.gymapp.data.SessionSetEntity(o.getString("id"), o.getString("sessionId"), o.getString("exerciseId"), o.getInt("setIndex"), if (o.isNull("reps")) null else o.getInt("reps"), if (o.isNull("loadKg")) null else o.getDouble("loadKg"), o.getBoolean("completed"), o.getBoolean("increaseMarked")) }
+                val settings = (0 until root.getJSONArray("settings").length()).map { val o = root.getJSONArray("settings").getJSONObject(it); com.lamy.gymapp.data.AppSettingEntity(o.getString("key"), o.getString("value")) }
+                dao.insertExercises(exercises); dao.insertWorkouts(workouts); dao.insertWorkoutExercises(links); dao.saveLoadProfile(profiles)
+                sessions.forEach { dao.insertSession(it) }; sessionSets.forEach { dao.saveSessionSet(it) }; settings.forEach { dao.saveSetting(it) }
+            }.isSuccess
+            onDone(success)
+        }
     }
 
     fun saveLoad(exerciseId: String, setIndex: Int, value: Double) {
@@ -198,6 +297,14 @@ fun GymApp(viewModel: GymViewModel) {
 
 @Composable
 private fun SettingsScreen(viewModel: GymViewModel, onBack: () -> Unit, onEditWorkouts: () -> Unit) {
+    val context = LocalContext.current
+    var backupMessage by rememberSaveable { mutableStateOf("") }
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        uri?.let { viewModel.exportBackup(context, it) { ok -> backupMessage = if (ok) "Backup exportado com sucesso." else "Não foi possível exportar o backup." } }
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { viewModel.importBackup(context, it) { ok -> backupMessage = if (ok) "Backup restaurado com sucesso." else "Arquivo de backup inválido." } }
+    }
     val settings = viewModel.settings.collectAsStateWithLifecycle(initialValue = emptyList()).value.associate { it.key to it.value }
     var remindersEnabled by rememberSaveable(settings["remindersEnabled"]) { mutableStateOf(settings["remindersEnabled"] != "false") }
     var selectedRest by rememberSaveable(settings["defaultRestSeconds"]) { mutableIntStateOf(settings["defaultRestSeconds"]?.toIntOrNull() ?: 90) }
@@ -228,11 +335,11 @@ private fun SettingsScreen(viewModel: GymViewModel, onBack: () -> Unit, onEditWo
                     Text("Lembrete do treino", fontWeight = FontWeight.Bold)
                     Text("07:00 · Segunda a sexta", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
                 }
-                Switch(checked = remindersEnabled, onCheckedChange = { remindersEnabled = it; viewModel.saveSetting("remindersEnabled", it.toString()) })
+                Switch(checked = remindersEnabled, onCheckedChange = { value -> remindersEnabled = value; viewModel.saveSetting("remindersEnabled", value.toString()); scheduleReminder(context, value, reminderTime) })
             }
             OutlinedTextField(
                 value = reminderTime,
-                onValueChange = { value -> reminderTime = value.take(5); viewModel.saveSetting("reminderTime", value.take(5)) },
+                onValueChange = { value -> reminderTime = value.take(5); viewModel.saveSetting("reminderTime", value.take(5)); scheduleReminder(context, remindersEnabled, value.take(5)) },
                 label = { Text("Horário do lembrete") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
@@ -260,6 +367,14 @@ private fun SettingsScreen(viewModel: GymViewModel, onBack: () -> Unit, onEditWo
             Spacer(Modifier.height(10.dp))
             SettingsRow("Sons e vibração", "Ativo")
             SettingsRow("Editar treinos", "Abrir", onEditWorkouts)
+            Spacer(Modifier.height(12.dp))
+            Text("Dados e segurança", color = Green, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+            Text("O backup inclui treinos, cargas, sessões, histórico e configurações.", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                Button(onClick = { exportLauncher.launch("gym-app-backup.json") }) { Text("Exportar") }
+                Button(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain")) }) { Text("Restaurar") }
+            }
+            if (backupMessage.isNotBlank()) Text(backupMessage, color = Green, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
         }
     }
 }
