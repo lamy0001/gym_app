@@ -7,6 +7,9 @@ import java.time.ZoneId
 internal fun sessionsInPeriod(sessions: List<WorkoutSessionEntity>, periodId: String?): List<WorkoutSessionEntity> =
     sessions.filter { it.periodId == periodId }
 
+internal fun peakLoadsBySession(sets: List<SessionSetEntity>): List<Double> =
+    sets.groupBy { it.sessionId }.values.mapNotNull { sessionSets -> sessionSets.mapNotNull { it.loadKg }.maxOrNull() }
+
 internal fun scheduledDaysThisWeek(
     sessions: List<WorkoutSessionEntity>,
     today: LocalDate,

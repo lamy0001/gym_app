@@ -9,6 +9,7 @@ Baixe o instalador Android (APK) diretamente deste repositório:
 - [Gym App v0.1.0 (APK de teste)](releases/GymApp-v0.1.0-debug.apk)
 - [Gym App v0.2.0 (APK de teste)](releases/GymApp-v0.2.0-debug.apk)
 - [Gym App v0.2.1 (APK de teste)](releases/GymApp-v0.2.1-debug.apk)
+- [Gym App v0.2.2 (APK de teste)](releases/GymApp-v0.2.2-debug.apk)
 
 É uma compilação de depuração para instalação direta; o Android pode solicitar autorização para instalar apps desta fonte. O APK não é distribuído pela Play Store.
 
@@ -25,6 +26,7 @@ A versão atual implementa o fluxo principal do aplicativo:
 - Criação de um novo período com opção de copiar os treinos do ciclo atual; a cópia mantém exercícios, séries, repetições e descansos editáveis sem alterar o ciclo anterior.
 - Sessões gravadas no período em que foram iniciadas; treinos e evolução podem ser consultados ao alternar períodos.
 - O botão Voltar do Android segue a navegação interna: retorna ao menu ao sair de treinos/configurações/histórico e volta à lista de treinos ao sair do editor.
+- No histórico, cada exercício aparece em um bloco com seu gráfico logo abaixo. O gráfico resume a maior carga por sessão, usa escala própria para cada exercício e destaca a sessão mais recente.
 - Cargas continuam compartilhadas por exercício entre períodos e treinos, aparecendo como preset ao reutilizar um exercício.
 - Interface dos exercícios no layout 10 com paleta Floresta: cabeçalho destacado, séries em faixas alternadas, carga editável e ações de concluir/aumentar carga separadas visualmente.
 - Persistência local com Room.

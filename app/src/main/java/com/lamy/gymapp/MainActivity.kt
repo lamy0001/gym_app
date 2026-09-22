@@ -88,6 +88,7 @@ import com.lamy.gymapp.data.WorkoutPeriodLinkEntity
 import com.lamy.gymapp.data.duplicateWorkoutTemplates
 import com.lamy.gymapp.data.sessionsInPeriod
 import com.lamy.gymapp.data.scheduledDaysThisWeek
+import com.lamy.gymapp.data.peakLoadsBySession
 import com.lamy.gymapp.data.seedIfEmpty
 import com.lamy.gymapp.data.ensureCatalog
 import kotlinx.coroutines.flow.Flow
@@ -795,74 +796,124 @@ private fun HistoryScreen(
     periods: List<TrainingPeriodEntity>,
     activePeriodId: String?
 ) {
-    var selectedExerciseId by rememberSaveable { mutableStateOf("supinated-pulldown") }
     var selectedPeriodId by rememberSaveable(activePeriodId) { mutableStateOf(activePeriodId) }
     var showPeriodPicker by remember { mutableStateOf(false) }
-    val loadHistory = viewModel.exerciseHistory(selectedExerciseId, selectedPeriodId).collectAsStateWithLifecycle(initialValue = emptyList()).value
     val periodSessions = sessionsInPeriod(sessions, selectedPeriodId)
     val today = java.time.LocalDate.now()
-    val selectedName = catalog.firstOrNull { it.id == selectedExerciseId }?.name ?: "Selecione um exercício"
+    val exercises = catalog.filter { it.id != "walk" && it.muscleGroup != "Preparação" }
     Scaffold(containerColor = AppBackground) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp)) {
             Header("Histórico", "Frequência e evolução", onBack)
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 TextButton(onClick = { showPeriodPicker = true }) {
                     Text("Período: ${periods.firstOrNull { it.id == selectedPeriodId }?.title ?: "Selecione um período"}  ▾", color = Green, fontWeight = FontWeight.Bold)
                 }
             }
-            val selectedPeriodSessions = periodSessions
-            val selectedPeriodDays = scheduledDaysThisWeek(selectedPeriodSessions, today, java.time.ZoneId.systemDefault())
-            Card(colors = CardDefaults.cardColors(containerColor = SoftGreen), shape = RoundedCornerShape(18.dp)) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Frequência nos dias programados", color = Green, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    Text("$selectedPeriodDays de 5 dias", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("Segunda a sexta · fins de semana não quebram a sequência", color = Color(0xFF527468), style = MaterialTheme.typography.bodySmall)
+            val selectedPeriodDays = scheduledDaysThisWeek(periodSessions, today, java.time.ZoneId.systemDefault())
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                Card(modifier = Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = SoftGreen), shape = RoundedCornerShape(16.dp)) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text("FREQUÊNCIA", color = Green, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                        Text("$selectedPeriodDays / 5 dias", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text("Seg–Sex", color = Color(0xFF527468), style = MaterialTheme.typography.bodySmall)
+                    }
                 }
-            }
-            Spacer(Modifier.height(18.dp))
-            Text("Evolução por exercício", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            Column(Modifier.fillMaxWidth().height(210.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                catalog.filter { it.id != "walk" }.forEach { exercise ->
-                    TextButton(onClick = { selectedExerciseId = exercise.id }) {
-                        Text(exercise.name, color = if (exercise.id == selectedExerciseId) Green else Color(0xFF60786D), fontWeight = if (exercise.id == selectedExerciseId) FontWeight.Bold else FontWeight.Normal)
+                Card(modifier = Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD5E0D5))) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text("TREINOS", color = Green, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                        Text("${periodSessions.size}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text("concluídos no período", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
-            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(selectedName, fontWeight = FontWeight.Bold)
-                    Text("Carga utilizada por sessão", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(14.dp))
-                    val values = loadHistory.mapNotNull { it.loadKg }.takeLast(8)
-                    val maxLoad = values.maxOrNull()?.coerceAtLeast(1.0) ?: 1.0
-                    Row(Modifier.fillMaxWidth().height(130.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.Bottom) {
-                        if (values.isEmpty()) {
-                            Text("Conclua séries para ver sua evolução", color = Color(0xFF71877E), style = MaterialTheme.typography.bodySmall)
-                        }
-                        values.forEachIndexed { index, value ->
-                            val height = (value / maxLoad * 92.0).toInt().coerceAtLeast(12)
-                            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom) {
-                                Text("${if (value % 1.0 == 0.0) value.toInt() else value} kg", color = Green, style = MaterialTheme.typography.labelSmall)
-                                Spacer(Modifier.height(4.dp))
-                                Spacer(Modifier.width(30.dp).height(height.dp).background(if (index == 4) Green else Color(0xFF63CDA5), RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp)))
-                                Spacer(Modifier.height(4.dp))
-                                Text("${index + 1}", color = Color(0xFF71877E), style = MaterialTheme.typography.labelSmall)
-                            }
-                        }
-                    }
+            Text("Evolução por exercício", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp))
+            Text("Cada bloco mostra a maior carga de cada sessão. A escala é própria para cada exercício.", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 3.dp, bottom = 8.dp))
+            androidx.compose.foundation.lazy.LazyColumn(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                verticalArrangement = Arrangement.spacedBy(9.dp)
+            ) {
+                items(exercises.size) { index ->
+                    ExerciseEvolutionCard(
+                        exercise = exercises[index],
+                        history = viewModel.exerciseHistory(exercises[index].id, selectedPeriodId).collectAsStateWithLifecycle(initialValue = emptyList()).value,
+                        index = index
+                    )
                 }
             }
-            Spacer(Modifier.height(14.dp))
-            HistoryMetric("Treinos concluídos neste período", selectedPeriodSessions.size.toString())
-            HistoryMetric("Dias programados nesta semana", "$selectedPeriodDays de 5")
-            HistoryMetric("Exercício selecionado", selectedName)
         }
     }
     if (showPeriodPicker) {
         PeriodPickerDialog(periods, selectedPeriodId, onDismiss = { showPeriodPicker = false }, onSelect = { selectedPeriodId = it.id; showPeriodPicker = false })
     }
 }
+
+@Composable
+private fun ExerciseEvolutionCard(exercise: ExerciseEntity, history: List<com.lamy.gymapp.data.SessionSetEntity>, index: Int) {
+    val cardColor = if (index % 2 == 0) Color.White else Color(0xFFEAF2E8)
+    val sessionLoads = peakLoadsBySession(history).takeLast(8)
+    val scaleMax = sessionLoads.maxOrNull()?.coerceAtLeast(1.0) ?: 1.0
+    val lastLoad = sessionLoads.lastOrNull()
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = cardColor),
+        shape = RoundedCornerShape(16.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (index % 2 == 0) Color(0xFFD5E0D5) else Color(0xFFC8D9C5))
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(exercise.name, color = Color(0xFF263A2B), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                    Text(exercise.muscleGroup, color = Color(0xFF657568), style = MaterialTheme.typography.bodySmall)
+                }
+                if (lastLoad != null) {
+                    Surface(color = SoftGreen, shape = RoundedCornerShape(10.dp)) {
+                        Text("${formatLoad(lastLoad)} kg", color = Green, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp))
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (sessionLoads.isEmpty()) "HISTÓRICO DE CARGA · kg" else "MAIOR CARGA POR SESSÃO · kg · últimas ${sessionLoads.size}",
+                color = Color(0xFF657568),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            if (sessionLoads.isEmpty()) {
+                Box(Modifier.fillMaxWidth().height(58.dp), contentAlignment = Alignment.CenterStart) {
+                    Text("Ainda sem cargas registradas neste período", color = Color(0xFF71877E), style = MaterialTheme.typography.bodySmall)
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(112.dp).padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    sessionLoads.forEachIndexed { barIndex, load ->
+                        val height = (load / scaleMax * 66.0).toInt().coerceAtLeast(10)
+                        Column(
+                            modifier = Modifier.weight(1f).fillMaxSize(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Bottom
+                        ) {
+                            Text(formatLoad(load), color = Color(0xFF425D46), style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                            Spacer(Modifier.height(3.dp))
+                            Spacer(
+                                Modifier.width(22.dp).height(height.dp).background(
+                                    if (barIndex == sessionLoads.lastIndex) Green else Color(0xFF8FB595),
+                                    RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp)
+                                )
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text("${barIndex + 1}", color = Color(0xFF71877E), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatLoad(load: Double): String = if (load % 1.0 == 0.0) load.toInt().toString() else load.toString()
 
 @Composable
 private fun Header(title: String, subtitle: String, onBack: () -> Unit) {
@@ -872,14 +923,6 @@ private fun Header(title: String, subtitle: String, onBack: () -> Unit) {
             Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(subtitle, color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
         }
-    }
-}
-
-@Composable
-private fun HistoryMetric(label: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
-        Text(value, color = Green, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
     }
 }
 

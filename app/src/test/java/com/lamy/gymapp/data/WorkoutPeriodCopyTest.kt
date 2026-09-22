@@ -58,4 +58,17 @@ class WorkoutPeriodCopyTest {
         assertEquals(1, sessionsInPeriod(sessions, "period-b").size)
         assertEquals(1, scheduledDaysThisWeek(sessionsInPeriod(sessions, "period-b"), today, zone))
     }
+
+    @Test
+    fun exerciseChartUsesOnePeakLoadBarPerWorkoutSession() {
+        val sets = listOf(
+            SessionSetEntity("a1", "session-a", "row", 1, loadKg = 20.0, completed = true),
+            SessionSetEntity("a2", "session-a", "row", 2, loadKg = 22.5, completed = true),
+            SessionSetEntity("a3", "session-a", "row", 3, loadKg = 25.0, completed = true),
+            SessionSetEntity("b1", "session-b", "row", 1, loadKg = 25.0, completed = true),
+            SessionSetEntity("b2", "session-b", "row", 2, loadKg = 30.0, completed = true)
+        )
+
+        assertEquals(listOf(25.0, 30.0), peakLoadsBySession(sets))
+    }
 }
