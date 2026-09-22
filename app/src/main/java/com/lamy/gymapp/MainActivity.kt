@@ -363,6 +363,14 @@ fun GymApp(viewModel: GymViewModel) {
     val selectedId by viewModel.selectedWorkoutId.collectAsStateWithLifecycle()
     var screen by remember { mutableStateOf("home") }
 
+    BackHandler(enabled = screen != "home") {
+        when (screen) {
+            "edit" -> screen = "workouts"
+            "workout" -> { viewModel.finishSession(); screen = "home" }
+            else -> screen = "home"
+        }
+    }
+
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
             if (screen == "workout" && selectedId != null) {
@@ -371,7 +379,6 @@ fun GymApp(viewModel: GymViewModel) {
                     viewModel.finishSession()
                     screen = "home"
                 }
-                BackHandler(onBack = leaveWorkout)
                 WorkoutScreen(
                     viewModel = viewModel,
                     workoutId = selectedId!!,
