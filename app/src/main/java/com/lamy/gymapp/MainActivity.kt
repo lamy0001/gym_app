@@ -21,6 +21,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.border
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -65,6 +67,8 @@ import com.lamy.gymapp.data.seedIfEmpty
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.delay
+import java.util.UUID
 import kotlinx.coroutines.launch
 
 private val Green = Color(0xFF19B987)
@@ -84,17 +88,52 @@ class MainActivity : ComponentActivity() {
 
 class GymViewModel(private val database: GymDatabase) : ViewModel() {
     val workouts: Flow<List<WorkoutEntity>> = database.dao().observeWorkouts()
+    val completedSessionCount: Flow<Int> = database.dao().observeCompletedSessionCount()
+    val settings: Flow<List<com.lamy.gymapp.data.AppSettingEntity>> = database.dao().observeSettings()
     private val _selectedWorkoutId = MutableStateFlow<String?>(null)
     val selectedWorkoutId: StateFlow<String?> = _selectedWorkoutId
+    private val _activeSessionId = MutableStateFlow<String?>(null)
+    val activeSessionId: StateFlow<String?> = _activeSessionId
 
     init { viewModelScope.launch { database.dao().seedIfEmpty() } }
 
     fun selectWorkout(id: String) { _selectedWorkoutId.value = id }
 
+    fun startSession(workoutId: String) {
+        val id = UUID.randomUUID().toString()
+        _activeSessionId.value = id
+        viewModelScope.launch { database.dao().insertSession(com.lamy.gymapp.data.WorkoutSessionEntity(id, workoutId, System.currentTimeMillis())) }
+    }
+
+    fun finishSession() {
+        _activeSessionId.value?.let { id -> viewModelScope.launch { database.dao().finishSession(id, System.currentTimeMillis()) } }
+    }
+
+    fun saveSessionSet(sessionId: String, exerciseId: String, setIndex: Int, loadKg: Double?, completed: Boolean, increaseMarked: Boolean) {
+        viewModelScope.launch {
+            database.dao().saveSessionSet(com.lamy.gymapp.data.SessionSetEntity("$sessionId-$exerciseId-$setIndex", sessionId, exerciseId, setIndex, loadKg = loadKg, completed = completed, increaseMarked = increaseMarked))
+            if (loadKg != null) saveLoad(exerciseId, setIndex, loadKg)
+        }
+    }
+
+    fun deleteWorkout(workoutId: String) {
+        viewModelScope.launch { database.dao().deleteWorkoutExercises(workoutId); database.dao().deleteWorkout(workoutId) }
+    }
+
+    fun updateWorkoutExercise(workoutId: String, exerciseId: String, restSeconds: Int, setCount: Int) {
+        viewModelScope.launch { database.dao().updateWorkoutExercise(workoutId, exerciseId, restSeconds, setCount) }
+    }
+
     fun exercises(workoutId: String): Flow<List<WorkoutExerciseRow>> =
         database.dao().observeWorkoutExercises(workoutId)
 
     fun loadProfile(exerciseId: String) = database.dao().observeLoadProfile(exerciseId)
+
+    fun exerciseHistory(exerciseId: String) = database.dao().observeExerciseHistory(exerciseId)
+
+    fun saveSetting(key: String, value: String) {
+        viewModelScope.launch { database.dao().saveSetting(com.lamy.gymapp.data.AppSettingEntity(key, value)) }
+    }
 
     fun saveLoad(exerciseId: String, setIndex: Int, value: Double) {
         viewModelScope.launch {
@@ -127,20 +166,27 @@ fun GymApp(viewModel: GymViewModel) {
                 WorkoutScreen(
                     viewModel = viewModel,
                     workoutId = selectedId!!,
+                    sessionId = viewModel.activeSessionId.collectAsStateWithLifecycle().value,
                     workout = workouts.firstOrNull { it.id == selectedId },
                     exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value,
-                    onBack = { screen = "home" }
+                    onBack = { viewModel.finishSession(); screen = "home" }
                 )
             } else if (screen == "settings") {
-                SettingsScreen(onBack = { screen = "home" })
+                SettingsScreen(viewModel = viewModel, onBack = { screen = "home" }, onEditWorkouts = { screen = "workouts" })
             } else if (screen == "workouts") {
-                WorkoutsScreen(workouts = workouts, onBack = { screen = "home" }, onOpenWorkout = { id -> viewModel.selectWorkout(id); screen = "workout" })
+                WorkoutsScreen(workouts = workouts, onBack = { screen = "home" }, onOpenWorkout = { id -> viewModel.selectWorkout(id); viewModel.startSession(id); screen = "workout" }, onEditWorkout = { id -> viewModel.selectWorkout(id); screen = "edit" }, onDeleteWorkout = viewModel::deleteWorkout)
+            } else if (screen == "edit" && selectedId != null) {
+                EditWorkoutScreen(workout = workouts.firstOrNull { it.id == selectedId }, exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value, onBack = { screen = "workouts" }, onSave = { item, rest, sets -> viewModel.updateWorkoutExercise(selectedId!!, item.exerciseId, rest, sets) })
             } else if (screen == "history") {
-                HistoryScreen(onBack = { screen = "home" })
+                HistoryScreen(
+                    onBack = { screen = "home" },
+                    completedSessions = viewModel.completedSessionCount.collectAsStateWithLifecycle(initialValue = 0).value,
+                    loadHistory = viewModel.exerciseHistory("supinated-pulldown").collectAsStateWithLifecycle(initialValue = emptyList()).value
+                )
             } else {
                 HomeScreen(
                     workouts = workouts,
-                    onOpenWorkout = { id -> viewModel.selectWorkout(id); screen = "workout" },
+                    onOpenWorkout = { id -> viewModel.selectWorkout(id); viewModel.startSession(id); screen = "workout" },
                     onSettings = { screen = "settings" },
                     onWorkouts = { screen = "workouts" },
                     onHistory = { screen = "history" }
@@ -151,9 +197,11 @@ fun GymApp(viewModel: GymViewModel) {
 }
 
 @Composable
-private fun SettingsScreen(onBack: () -> Unit) {
-    var remindersEnabled by rememberSaveable { mutableStateOf(true) }
-    var selectedRest by rememberSaveable { mutableIntStateOf(90) }
+private fun SettingsScreen(viewModel: GymViewModel, onBack: () -> Unit, onEditWorkouts: () -> Unit) {
+    val settings = viewModel.settings.collectAsStateWithLifecycle(initialValue = emptyList()).value.associate { it.key to it.value }
+    var remindersEnabled by rememberSaveable(settings["remindersEnabled"]) { mutableStateOf(settings["remindersEnabled"] != "false") }
+    var selectedRest by rememberSaveable(settings["defaultRestSeconds"]) { mutableIntStateOf(settings["defaultRestSeconds"]?.toIntOrNull() ?: 90) }
+    var reminderTime by rememberSaveable(settings["reminderTime"]) { mutableStateOf(settings["reminderTime"] ?: "07:00") }
 
     Scaffold(containerColor = AppBackground) { padding ->
         Column(
@@ -180,8 +228,15 @@ private fun SettingsScreen(onBack: () -> Unit) {
                     Text("Lembrete do treino", fontWeight = FontWeight.Bold)
                     Text("07:00 · Segunda a sexta", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
                 }
-                Switch(checked = remindersEnabled, onCheckedChange = { remindersEnabled = it })
+                Switch(checked = remindersEnabled, onCheckedChange = { remindersEnabled = it; viewModel.saveSetting("remindersEnabled", it.toString()) })
             }
+            OutlinedTextField(
+                value = reminderTime,
+                onValueChange = { value -> reminderTime = value.take(5); viewModel.saveSetting("reminderTime", value.take(5)) },
+                label = { Text("Horário do lembrete") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
             Text("Dias programados", color = Green, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
             Text("Sábado e domingo não quebram sua sequência.", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 12.dp)) {
@@ -197,22 +252,22 @@ private fun SettingsScreen(onBack: () -> Unit) {
             Text("Tempo de descanso", color = Green, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 10.dp)) {
                 listOf(60, 90, 120).forEach { seconds ->
-                    TextButton(onClick = { selectedRest = seconds }) {
+                        TextButton(onClick = { selectedRest = seconds; viewModel.saveSetting("defaultRestSeconds", seconds.toString()) }) {
                         Text("$seconds s", color = if (selectedRest == seconds) Green else Color(0xFF60786D), fontWeight = FontWeight.Bold)
                     }
                 }
             }
             Spacer(Modifier.height(10.dp))
             SettingsRow("Sons e vibração", "Ativo")
-            SettingsRow("Editar treinos", "Abrir")
+            SettingsRow("Editar treinos", "Abrir", onEditWorkouts)
         }
     }
 }
 
 @Composable
-private fun SettingsRow(title: String, value: String) {
+private fun SettingsRow(title: String, value: String, onClick: (() -> Unit)? = null) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp),
+        modifier = Modifier.fillMaxWidth().clickable(enabled = onClick != null) { onClick?.invoke() }.padding(vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -272,7 +327,17 @@ private fun MenuRow(icon: String, title: String, subtitle: String, onClick: () -
 }
 
 @Composable
-private fun WorkoutsScreen(workouts: List<WorkoutEntity>, onBack: () -> Unit, onOpenWorkout: (String) -> Unit) {
+private fun WorkoutsScreen(workouts: List<WorkoutEntity>, onBack: () -> Unit, onOpenWorkout: (String) -> Unit, onEditWorkout: (String) -> Unit, onDeleteWorkout: (String) -> Unit) {
+    var workoutToDelete by remember { mutableStateOf<WorkoutEntity?>(null) }
+    if (workoutToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { workoutToDelete = null },
+            title = { Text("Excluir treino?") },
+            text = { Text("O treino ${workoutToDelete!!.sortOrder} · ${workoutToDelete!!.title} será removido. O histórico de sessões será preservado.") },
+            confirmButton = { TextButton(onClick = { onDeleteWorkout(workoutToDelete!!.id); workoutToDelete = null }) { Text("Excluir", color = Color(0xFFB54D49)) } },
+            dismissButton = { TextButton(onClick = { workoutToDelete = null }) { Text("Cancelar") } }
+        )
+    }
     Scaffold(containerColor = AppBackground) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp)) {
             Header("Meus treinos", "Todos os treinos cadastrados", onBack)
@@ -290,6 +355,8 @@ private fun WorkoutsScreen(workouts: List<WorkoutEntity>, onBack: () -> Unit, on
                                 Text("Treino ${workout.sortOrder} · ${workout.title}", fontWeight = FontWeight.Bold)
                                 Text(workout.subtitle, color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
                             }
+                            TextButton(onClick = { onEditWorkout(workout.id) }) { Text("✎", color = Green) }
+                            TextButton(onClick = { workoutToDelete = workout }) { Text("♲", color = Color(0xFFB54D49)) }
                             Text("›", color = Green, style = MaterialTheme.typography.titleLarge)
                         }
                     }
@@ -300,14 +367,80 @@ private fun WorkoutsScreen(workouts: List<WorkoutEntity>, onBack: () -> Unit, on
 }
 
 @Composable
-private fun HistoryScreen(onBack: () -> Unit) {
+private fun EditWorkoutScreen(
+    workout: WorkoutEntity?,
+    exercises: List<WorkoutExerciseRow>,
+    onBack: () -> Unit,
+    onSave: (WorkoutExerciseRow, Int, Int) -> Unit
+) {
+    Scaffold(containerColor = AppBackground) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp)) {
+            Header(
+                title = "Editar treino ${workout?.sortOrder ?: ""}",
+                subtitle = workout?.title ?: "Treino",
+                onBack = onBack
+            )
+            Text(
+                "Ajuste séries e descanso por exercício. As alterações ficam salvas no aparelho.",
+                color = Color(0xFF60786D),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+            androidx.compose.foundation.lazy.LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(exercises.size) { index ->
+                    val item = exercises[index]
+                    var restText by remember(item.exerciseId, item.restSeconds) { mutableStateOf(item.restSeconds.toString()) }
+                    var setsText by remember(item.exerciseId, item.setCount) { mutableStateOf(item.setCount.toString()) }
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(Modifier.padding(14.dp)) {
+                            Text(item.name, fontWeight = FontWeight.Bold)
+                            Text(item.muscleGroup, color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
+                                OutlinedTextField(
+                                    value = restText,
+                                    onValueChange = { restText = it.filter(Char::isDigit).take(4) },
+                                    label = { Text("Descanso (s)") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                OutlinedTextField(
+                                    value = setsText,
+                                    onValueChange = { setsText = it.filter(Char::isDigit).take(2) },
+                                    label = { Text("Séries") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    val rest = restText.toIntOrNull()?.coerceIn(0, 3600) ?: item.restSeconds
+                                    val sets = setsText.toIntOrNull()?.coerceIn(1, 20) ?: item.setCount
+                                    onSave(item, rest, sets)
+                                    restText = rest.toString()
+                                    setsText = sets.toString()
+                                },
+                                modifier = Modifier.align(Alignment.End)
+                            ) { Text("Salvar exercício", color = Green, fontWeight = FontWeight.Bold) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryScreen(onBack: () -> Unit, completedSessions: Int, loadHistory: List<com.lamy.gymapp.data.SessionSetEntity>) {
     Scaffold(containerColor = AppBackground) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp)) {
             Header("Histórico", "Frequência e evolução", onBack)
             Card(colors = CardDefaults.cardColors(containerColor = SoftGreen), shape = RoundedCornerShape(18.dp)) {
                 Column(Modifier.padding(16.dp)) {
                     Text("Frequência nos dias programados", color = Green, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    Text("5 de 5 dias", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("${completedSessions.coerceAtMost(5)} de 5 dias", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                     Text("Segunda a sexta · fins de semana não quebram a sequência", color = Color(0xFF527468), style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -319,14 +452,20 @@ private fun HistoryScreen(onBack: () -> Unit) {
                     Text("Puxada supinada", fontWeight = FontWeight.Bold)
                     Text("Carga utilizada por sessão", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(14.dp))
+                    val values = loadHistory.mapNotNull { it.loadKg }.takeLast(8)
+                    val maxLoad = values.maxOrNull()?.coerceAtLeast(1.0) ?: 1.0
                     Row(Modifier.fillMaxWidth().height(130.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.Bottom) {
-                        listOf(35, 50, 65, 78, 92).forEachIndexed { index, height ->
+                        if (values.isEmpty()) {
+                            Text("Conclua séries para ver sua evolução", color = Color(0xFF71877E), style = MaterialTheme.typography.bodySmall)
+                        }
+                        values.forEachIndexed { index, value ->
+                            val height = (value / maxLoad * 92.0).toInt().coerceAtLeast(12)
                             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom) {
-                                Text("${6 + index} kg", color = Green, style = MaterialTheme.typography.labelSmall)
+                                Text("${if (value % 1.0 == 0.0) value.toInt() else value} kg", color = Green, style = MaterialTheme.typography.labelSmall)
                                 Spacer(Modifier.height(4.dp))
                                 Spacer(Modifier.width(30.dp).height(height.dp).background(if (index == 4) Green else Color(0xFF63CDA5), RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp)))
                                 Spacer(Modifier.height(4.dp))
-                                Text("S${index + 1}", color = Color(0xFF71877E), style = MaterialTheme.typography.labelSmall)
+                                Text("${index + 1}", color = Color(0xFF71877E), style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
@@ -386,6 +525,7 @@ private fun WorkoutCarouselCard(workout: WorkoutEntity, onDoubleTap: () -> Unit)
 private fun WorkoutScreen(
     viewModel: GymViewModel,
     workoutId: String,
+    sessionId: String?,
     workout: WorkoutEntity?,
     exercises: List<WorkoutExerciseRow>,
     onBack: () -> Unit
@@ -411,6 +551,8 @@ private fun WorkoutScreen(
                         .collectAsStateWithLifecycle(initialValue = emptyList()).value
                     ExerciseCard(item, loadProfile, expanded[item.exerciseId] == true, onLoadChanged = { setIndex, value ->
                         viewModel.saveLoad(item.exerciseId, setIndex, value)
+                    }, onSetChanged = { setIndex, loadKg, completed, increaseMarked ->
+                        sessionId?.let { viewModel.saveSessionSet(it, item.exerciseId, setIndex, loadKg, completed, increaseMarked) }
                     }) {
                         expanded[item.exerciseId] = !(expanded[item.exerciseId] ?: true)
                     }
@@ -426,26 +568,44 @@ private fun ExerciseCard(
     loadProfile: List<com.lamy.gymapp.data.ExerciseLoadProfileEntity>,
     isExpanded: Boolean,
     onLoadChanged: (Int, Double) -> Unit,
+    onSetChanged: (Int, Double?, Boolean, Boolean) -> Unit,
     onToggle: () -> Unit
 ) {
+    var restRemaining by remember(item.exerciseId) { mutableIntStateOf(0) }
+    LaunchedEffect(restRemaining) {
+        if (restRemaining > 0) {
+            delay(1000)
+            restRemaining -= 1
+        }
+    }
     Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle)) {
                 Text(item.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                Text("${item.restSeconds}s", color = Green, style = MaterialTheme.typography.labelSmall)
+                TextButton(
+                    onClick = { if (item.restSeconds > 0) restRemaining = item.restSeconds },
+                    enabled = item.restSeconds > 0
+                ) {
+                    Text(
+                        text = if (restRemaining > 0) "⏱ ${restRemaining}s" else "⏱ ${item.restSeconds}s",
+                        color = if (restRemaining > 0) Color(0xFFB87519) else Green,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
                 Icon(if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = "Abrir ou fechar", tint = Green)
             }
             Text(item.muscleGroup, color = Color(0xFF6E857A), style = MaterialTheme.typography.bodySmall)
             if (isExpanded) {
                 Spacer(Modifier.height(8.dp))
-                repeat(3) { setIndex ->
+                repeat(item.setCount) { setIndex ->
                     val preset = loadProfile.firstOrNull { it.setIndex == setIndex + 1 }?.lastUsedLoadKg
                     SetRow(
                         number = setIndex + 1,
                         reps = item.plannedReps,
                         load = preset?.let { if (it % 1.0 == 0.0) "${it.toInt()} kg" else "$it kg" }.orEmpty(),
-                        completed = setIndex == 0,
+                        completed = false,
                         onLoadChanged = { value -> value.toDoubleOrNull()?.let { onLoadChanged(setIndex + 1, it) } }
+                        , onSetChanged = { loadKg, completed, increaseMarked -> onSetChanged(setIndex + 1, loadKg, completed, increaseMarked) }
                     )
                 }
             }
@@ -459,9 +619,13 @@ private fun SetRow(
     reps: String,
     load: String,
     completed: Boolean,
-    onLoadChanged: (String) -> Unit
+    onLoadChanged: (String) -> Unit,
+    onSetChanged: (Double?, Boolean, Boolean) -> Unit
 ) {
     var enteredLoad by remember(load) { mutableStateOf(load) }
+    var isCompleted by remember { mutableStateOf(completed) }
+    var increaseMarked by remember { mutableStateOf(false) }
+    fun persist() = onSetChanged(enteredLoad.removeSuffix(" kg").trim().toDoubleOrNull(), isCompleted, increaseMarked)
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Text("$number", modifier = Modifier.width(32.dp), color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
         Text(reps, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
@@ -472,9 +636,22 @@ private fun SetRow(
             singleLine = true,
             textStyle = MaterialTheme.typography.labelSmall
         )
-        TextButton(onClick = { }) {
-            Icon(Icons.Default.Check, contentDescription = "Marcar série", tint = if (completed) Green else Color(0xFF9DB2A9))
+        Surface(
+            modifier = Modifier.width(34.dp).height(34.dp).clickable { isCompleted = !isCompleted; persist() },
+            color = if (isCompleted) SoftGreen else Color.White,
+            shape = RoundedCornerShape(9.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, if (isCompleted) Green else Color(0xFFD4E0DA))
+        ) {
+            Icon(Icons.Default.Check, contentDescription = "Marcar série", tint = if (isCompleted) Green else Color(0xFF9DB2A9), modifier = Modifier.padding(8.dp))
         }
-        TextButton(onClick = { }) { Text("＋", color = Green, fontWeight = FontWeight.Bold) }
+        Spacer(Modifier.width(6.dp))
+        Surface(
+            modifier = Modifier.width(34.dp).height(34.dp).clickable { increaseMarked = !increaseMarked; isCompleted = true; persist() },
+            color = if (increaseMarked) SoftGreen else Color.White,
+            shape = RoundedCornerShape(9.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, if (increaseMarked) Green else Color(0xFFD4E0DA))
+        ) {
+            Text("+", color = if (increaseMarked) Green else Color(0xFF9DB2A9), fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 10.dp, top = 6.dp))
+        }
     }
 }
