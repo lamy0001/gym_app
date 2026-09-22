@@ -814,8 +814,8 @@ private fun HistoryScreen(
                 Card(modifier = Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = SoftGreen), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.padding(14.dp)) {
                         Text("FREQUÊNCIA", color = Green, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                        Text("$selectedPeriodDays / 5 dias", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Text("Seg–Sex", color = Color(0xFF527468), style = MaterialTheme.typography.bodySmall)
+                        Text("$selectedPeriodDays ${if (selectedPeriodDays == 1) "dia" else "dias"}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text("nesta semana · seg–sex", color = Color(0xFF527468), style = MaterialTheme.typography.bodySmall)
                     }
                 }
                 Card(modifier = Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD5E0D5))) {

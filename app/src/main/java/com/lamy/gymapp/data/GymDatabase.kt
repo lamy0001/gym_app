@@ -43,8 +43,8 @@ interface GymDao {
     @Query("SELECT * FROM workout_exercises we INNER JOIN exercises e ON e.id = we.exerciseId WHERE we.workoutId = :workoutId ORDER BY we.sortOrder") fun observeWorkoutExercises(workoutId: String): Flow<List<WorkoutExerciseRow>>
     @Query("SELECT * FROM exercise_load_profiles WHERE exerciseId = :exerciseId ORDER BY setIndex") fun observeLoadProfile(exerciseId: String): Flow<List<ExerciseLoadProfileEntity>>
     @Query("SELECT COUNT(*) FROM workout_sessions WHERE completed = 1") fun observeCompletedSessionCount(): Flow<Int>
-    @Query("SELECT * FROM workout_sessions WHERE completed = 1 ORDER BY finishedAt") fun observeCompletedSessions(): Flow<List<WorkoutSessionEntity>>
-    @Query("SELECT ss.* FROM session_sets ss INNER JOIN workout_sessions ws ON ws.id = ss.sessionId WHERE ss.exerciseId = :exerciseId AND ss.completed = 1 AND ss.loadKg IS NOT NULL AND (:periodId IS NULL OR ws.periodId = :periodId) ORDER BY ws.finishedAt, ss.setIndex") fun observeExerciseHistory(exerciseId: String, periodId: String?): Flow<List<SessionSetEntity>>
+    @Query("SELECT * FROM workout_sessions ws WHERE ws.completed = 1 AND ws.finishedAt IS NOT NULL AND EXISTS (SELECT 1 FROM session_sets ss WHERE ss.sessionId = ws.id AND ss.completed = 1) ORDER BY ws.finishedAt") fun observeCompletedSessions(): Flow<List<WorkoutSessionEntity>>
+    @Query("SELECT ss.* FROM session_sets ss INNER JOIN workout_sessions ws ON ws.id = ss.sessionId WHERE ws.completed = 1 AND ss.exerciseId = :exerciseId AND ss.completed = 1 AND ss.loadKg IS NOT NULL AND (:periodId IS NULL OR ws.periodId = :periodId) ORDER BY ws.finishedAt, ss.setIndex") fun observeExerciseHistory(exerciseId: String, periodId: String?): Flow<List<SessionSetEntity>>
     @Query("SELECT * FROM app_settings") fun observeSettings(): Flow<List<AppSettingEntity>>
     @Query("SELECT * FROM training_periods WHERE active = 1 ORDER BY startedAt DESC LIMIT 1") fun observeActivePeriod(): Flow<TrainingPeriodEntity?>
     @Query("SELECT * FROM training_periods ORDER BY startedAt DESC") fun observePeriods(): Flow<List<TrainingPeriodEntity>>

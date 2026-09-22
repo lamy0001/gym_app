@@ -49,7 +49,9 @@ class WorkoutPeriodCopyTest {
             WorkoutSessionEntity("a2", "lower-a", timestamp(today.minusDays(2)), timestamp(today.minusDays(2)), true, "period-a"),
             WorkoutSessionEntity("a3", "cardio-a", timestamp(today.minusDays(3)), timestamp(today.minusDays(3)), true, "period-a"),
             WorkoutSessionEntity("a4", "extra-a", timestamp(today.minusDays(5)), timestamp(today.minusDays(5)), true, "period-a"),
-            WorkoutSessionEntity("b1", "upper-b", timestamp(today), timestamp(today), true, "period-b")
+            WorkoutSessionEntity("b1", "upper-b", timestamp(today), timestamp(today), true, "period-b"),
+            WorkoutSessionEntity("a5", "unfinished", timestamp(today), timestamp(today), false, "period-a"),
+            WorkoutSessionEntity("a6", "not-finished", timestamp(today), null, true, "period-a")
         )
 
         val selected = sessionsInPeriod(sessions, "period-a")
@@ -57,6 +59,22 @@ class WorkoutPeriodCopyTest {
         assertEquals(3, scheduledDaysThisWeek(selected, today, zone))
         assertEquals(1, sessionsInPeriod(sessions, "period-b").size)
         assertEquals(1, scheduledDaysThisWeek(sessionsInPeriod(sessions, "period-b"), today, zone))
+    }
+
+    @Test
+    fun frequencyCountsDistinctWeekdaysOnlyFromFinishedSessions() {
+        val zone = ZoneId.of("America/Sao_Paulo")
+        val monday = LocalDate.of(2026, 9, 21)
+        fun timestamp(day: LocalDate) = day.atTime(18, 0).atZone(zone).toInstant().toEpochMilli()
+        val sessions = listOf(
+            WorkoutSessionEntity("m1", "upper", timestamp(monday), timestamp(monday), true, "period-a"),
+            WorkoutSessionEntity("m2", "lower", timestamp(monday), timestamp(monday), true, "period-a"),
+            WorkoutSessionEntity("sat", "extra", timestamp(monday.plusDays(5)), timestamp(monday.plusDays(5)), true, "period-a"),
+            WorkoutSessionEntity("open", "open", timestamp(monday.plusDays(1)), null, true, "period-a")
+        )
+
+        assertEquals(1, scheduledDaysThisWeek(sessionsInPeriod(sessions, "period-a"), monday.plusDays(6), zone))
+        assertEquals(0, scheduledDaysThisWeek(emptyList(), monday.plusDays(6), zone))
     }
 
     @Test
