@@ -11,6 +11,7 @@ A versão atual implementa o fluxo principal do aplicativo:
 - Menu inicial com carrossel de treinos.
 - Abertura do treino por duplo toque no card.
 - Cards de exercícios expandidos por padrão.
+- Interface dos exercícios no layout 10 com paleta Floresta: cabeçalho destacado, séries em faixas alternadas, carga editável e ações de concluir/aumentar carga separadas visualmente.
 - Persistência local com Room.
 - Exercícios identificados globalmente para compartilhar cargas entre treinos.
 - Carga utilizada anteriormente disponível como preset no próximo treino.
@@ -18,6 +19,7 @@ A versão atual implementa o fluxo principal do aplicativo:
 - Cinco treinos iniciais completos: Upper, Lower, Cardio, Upper 2 e Lower 2.
 - Sessões e séries persistidas, com check e sinalização “+” de aumento de carga.
 - Descanso editável por exercício e cronômetro acionável no card.
+- Ao abrir um treino, o cabeçalho permite iniciar e finalizar a sessão; o botão Voltar do Android retorna ao menu sem encerrar o aplicativo.
 - Editor de séries/descanso e exclusão de treinos com confirmação.
 - Histórico real de sessões e gráfico de carga proporcional ao próprio exercício.
 - Configurações persistidas, lembrete recorrente em dias úteis e horário editável.

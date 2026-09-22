@@ -16,10 +16,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -48,6 +50,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -825,10 +828,17 @@ private fun ExerciseCard(
             restRemaining -= 1
         }
     }
-    Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
-        Column(Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().background(SoftGreen, RoundedCornerShape(12.dp)).clickable(onClick = onToggle).padding(horizontal = 10.dp, vertical = 4.dp)) {
-                Text(item.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(16.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD5E0D5))
+    ) {
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().background(Color(0xFFE4EEE4)).clickable(onClick = onToggle).padding(horizontal = 14.dp, vertical = 12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text(item.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color(0xFF263A2B))
+                    Text("${item.muscleGroup} · descanso ${item.restSeconds}s", color = Color(0xFF657568), style = MaterialTheme.typography.labelSmall)
+                }
                 TextButton(
                     onClick = { if (item.restSeconds > 0) restRemaining = item.restSeconds },
                     enabled = item.restSeconds > 0
@@ -841,9 +851,7 @@ private fun ExerciseCard(
                 }
                 Icon(if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = "Abrir ou fechar", tint = Green)
             }
-            Text(item.muscleGroup, color = Color(0xFF6E857A), style = MaterialTheme.typography.bodySmall)
             if (isExpanded) {
-                Spacer(Modifier.height(8.dp))
                 repeat(item.setCount) { setIndex ->
                     val preset = loadProfile.firstOrNull { it.setIndex == setIndex + 1 }?.lastUsedLoadKg
                     val planned = item.plannedLoadsCsv.split(",").getOrNull(setIndex)?.trim()?.toDoubleOrNull()
@@ -854,7 +862,7 @@ private fun ExerciseCard(
                         load = effectivePreset?.let { if (it % 1.0 == 0.0) "${it.toInt()} kg" else "$it kg" }.orEmpty(),
                         completed = false,
                         onLoadChanged = { value -> value.toDoubleOrNull()?.let { onLoadChanged(setIndex + 1, it) } },
-                        rowColor = if (setIndex % 2 == 0) Color(0xFFF8FBF9) else Color(0xFFEAF5EF),
+                        rowColor = if (setIndex % 2 == 0) Color(0xFFFBFCFA) else Color(0xFFEDF3EB),
                         onSetChanged = { loadKg, completed, increaseMarked -> onSetChanged(setIndex + 1, loadKg, completed, increaseMarked) }
                     )
                 }
@@ -877,32 +885,44 @@ private fun SetRow(
     var isCompleted by remember { mutableStateOf(completed) }
     var increaseMarked by remember { mutableStateOf(false) }
     fun persist() = onSetChanged(enteredLoad.removeSuffix(" kg").trim().toDoubleOrNull(), isCompleted, increaseMarked)
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().background(rowColor, RoundedCornerShape(10.dp)).padding(horizontal = 6.dp, vertical = 6.dp)) {
-        Text("$number", modifier = Modifier.width(32.dp), color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
-        Text(reps, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().background(rowColor).padding(horizontal = 10.dp, vertical = 8.dp)) {
+        Surface(modifier = Modifier.width(28.dp).height(28.dp), color = SoftGreen, shape = RoundedCornerShape(9.dp)) {
+            Box(contentAlignment = Alignment.Center) { Text("$number", color = Green, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold) }
+        }
+        Text(reps, modifier = Modifier.weight(1f).padding(start = 10.dp), color = Color(0xFF657568), style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(
             value = enteredLoad,
             onValueChange = { enteredLoad = it; onLoadChanged(it.removeSuffix(" kg").trim()) },
-            modifier = Modifier.width(116.dp),
+            modifier = Modifier.width(110.dp),
             singleLine = true,
-            textStyle = MaterialTheme.typography.labelSmall
+            textStyle = MaterialTheme.typography.labelSmall,
+            shape = RoundedCornerShape(11.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Color(0xFF47714D),
+                unfocusedBorderColor = Color(0xFFB9C9BA),
+                focusedContainerColor = Color.White,
+                unfocusedContainerColor = Color.White
+            )
         )
+        Spacer(Modifier.width(10.dp))
+        androidx.compose.foundation.layout.Box(Modifier.width(1.dp).height(34.dp).background(Color(0xFFD5E0D5)))
+        Spacer(Modifier.width(10.dp))
         Surface(
-            modifier = Modifier.width(34.dp).height(34.dp).clickable { isCompleted = !isCompleted; persist() },
+            modifier = Modifier.width(39.dp).height(39.dp).clickable { isCompleted = !isCompleted; persist() },
             color = if (isCompleted) SoftGreen else Color.White,
-            shape = RoundedCornerShape(9.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, if (isCompleted) Green else Color(0xFFD4E0DA))
+            shape = RoundedCornerShape(12.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, if (isCompleted) Green else Color(0xFFC5D3C6))
         ) {
-            Icon(Icons.Default.Check, contentDescription = "Marcar série", tint = if (isCompleted) Green else Color(0xFF9DB2A9), modifier = Modifier.padding(8.dp))
+            Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Check, contentDescription = "Marcar série", tint = if (isCompleted) Green else Color(0xFF9DB2A9)) }
         }
-        Spacer(Modifier.width(6.dp))
+        Spacer(Modifier.width(7.dp))
         Surface(
-            modifier = Modifier.width(34.dp).height(34.dp).clickable { increaseMarked = !increaseMarked; isCompleted = true; persist() },
+            modifier = Modifier.width(39.dp).height(39.dp).clickable { increaseMarked = !increaseMarked; isCompleted = true; persist() },
             color = if (increaseMarked) SoftGreen else Color.White,
-            shape = RoundedCornerShape(9.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, if (increaseMarked) Green else Color(0xFFD4E0DA))
+            shape = RoundedCornerShape(12.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, if (increaseMarked) Green else Color(0xFFC5D3C6))
         ) {
-            Text("+", color = if (increaseMarked) Green else Color(0xFF9DB2A9), fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 10.dp, top = 6.dp))
+            Box(contentAlignment = Alignment.Center) { Text("+", color = if (increaseMarked) Green else Color(0xFF9DB2A9), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium) }
         }
     }
 }
