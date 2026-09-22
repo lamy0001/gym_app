@@ -133,11 +133,17 @@ fun GymApp(viewModel: GymViewModel) {
                 )
             } else if (screen == "settings") {
                 SettingsScreen(onBack = { screen = "home" })
+            } else if (screen == "workouts") {
+                WorkoutsScreen(workouts = workouts, onBack = { screen = "home" }, onOpenWorkout = { id -> viewModel.selectWorkout(id); screen = "workout" })
+            } else if (screen == "history") {
+                HistoryScreen(onBack = { screen = "home" })
             } else {
                 HomeScreen(
                     workouts = workouts,
                     onOpenWorkout = { id -> viewModel.selectWorkout(id); screen = "workout" },
-                    onSettings = { screen = "settings" }
+                    onSettings = { screen = "settings" },
+                    onWorkouts = { screen = "workouts" },
+                    onHistory = { screen = "history" }
                 )
             }
         }
@@ -218,7 +224,9 @@ private fun SettingsRow(title: String, value: String) {
 private fun HomeScreen(
     workouts: List<WorkoutEntity>,
     onOpenWorkout: (String) -> Unit,
-    onSettings: () -> Unit
+    onSettings: () -> Unit,
+    onWorkouts: () -> Unit,
+    onHistory: () -> Unit
 ) {
     Scaffold(containerColor = AppBackground) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 18.dp)) {
@@ -237,7 +245,117 @@ private fun HomeScreen(
                     WorkoutCarouselCard(workout) { onOpenWorkout(workout.id) }
                 }
             }
+            Spacer(Modifier.height(22.dp))
+            Text("Menu", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            MenuRow("⌂", "Início", "Tela principal", {})
+            MenuRow("▣", "Meus treinos", "Ver e iniciar todos os treinos", onWorkouts)
+            MenuRow("◷", "Histórico", "Frequência e evolução de cargas", onHistory)
+            MenuRow("⚙", "Configurações", "Lembretes, dias e preferências", onSettings)
         }
+    }
+}
+
+@Composable
+private fun MenuRow(icon: String, title: String, subtitle: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(icon, color = Green, style = MaterialTheme.typography.titleMedium, modifier = Modifier.width(32.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+            Text(subtitle, color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
+        }
+        Text("›", color = Green, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+@Composable
+private fun WorkoutsScreen(workouts: List<WorkoutEntity>, onBack: () -> Unit, onOpenWorkout: (String) -> Unit) {
+    Scaffold(containerColor = AppBackground) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp)) {
+            Header("Meus treinos", "Todos os treinos cadastrados", onBack)
+            androidx.compose.foundation.lazy.LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(workouts.size) { index ->
+                    val workout = workouts[index]
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable { onOpenWorkout(workout.id) },
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("${workout.sortOrder}", color = Green, fontWeight = FontWeight.Bold, modifier = Modifier.width(30.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("Treino ${workout.sortOrder} · ${workout.title}", fontWeight = FontWeight.Bold)
+                                Text(workout.subtitle, color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
+                            }
+                            Text("›", color = Green, style = MaterialTheme.typography.titleLarge)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryScreen(onBack: () -> Unit) {
+    Scaffold(containerColor = AppBackground) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp)) {
+            Header("Histórico", "Frequência e evolução", onBack)
+            Card(colors = CardDefaults.cardColors(containerColor = SoftGreen), shape = RoundedCornerShape(18.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Frequência nos dias programados", color = Green, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    Text("5 de 5 dias", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("Segunda a sexta · fins de semana não quebram a sequência", color = Color(0xFF527468), style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+            Text("Evolução por exercício", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Puxada supinada", fontWeight = FontWeight.Bold)
+                    Text("Carga utilizada por sessão", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(14.dp))
+                    Row(Modifier.fillMaxWidth().height(130.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.Bottom) {
+                        listOf(35, 50, 65, 78, 92).forEachIndexed { index, height ->
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom) {
+                                Text("${6 + index} kg", color = Green, style = MaterialTheme.typography.labelSmall)
+                                Spacer(Modifier.height(4.dp))
+                                Spacer(Modifier.width(30.dp).height(height.dp).background(if (index == 4) Green else Color(0xFF63CDA5), RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp)))
+                                Spacer(Modifier.height(4.dp))
+                                Text("S${index + 1}", color = Color(0xFF71877E), style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            HistoryMetric("Treinos concluídos", "18")
+            HistoryMetric("Maior sequência", "3 semanas")
+            HistoryMetric("Exercícios com evolução", "8 de 13")
+        }
+    }
+}
+
+@Composable
+private fun Header(title: String, subtitle: String, onBack: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = 18.dp)) {
+        IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Voltar") }
+        Column {
+            Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(subtitle, color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun HistoryMetric(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
+        Text(value, color = Green, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
     }
 }
 
