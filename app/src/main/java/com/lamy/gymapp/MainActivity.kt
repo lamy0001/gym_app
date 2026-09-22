@@ -76,6 +76,8 @@ import com.lamy.gymapp.data.GymDatabase
 import com.lamy.gymapp.data.WorkoutEntity
 import com.lamy.gymapp.data.ExerciseEntity
 import com.lamy.gymapp.data.WorkoutExerciseRow
+import com.lamy.gymapp.data.TrainingPeriodEntity
+import com.lamy.gymapp.data.WorkoutPeriodLinkEntity
 import com.lamy.gymapp.data.seedIfEmpty
 import com.lamy.gymapp.data.ensureCatalog
 import kotlinx.coroutines.flow.Flow
@@ -147,6 +149,7 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
     val completedSessionCount: Flow<Int> = database.dao().observeCompletedSessionCount()
     val completedSessions: Flow<List<com.lamy.gymapp.data.WorkoutSessionEntity>> = database.dao().observeCompletedSessions()
     val settings: Flow<List<com.lamy.gymapp.data.AppSettingEntity>> = database.dao().observeSettings()
+    val activePeriod: Flow<TrainingPeriodEntity?> = database.dao().observeActivePeriod()
     private val _selectedWorkoutId = MutableStateFlow<String?>(null)
     val selectedWorkoutId: StateFlow<String?> = _selectedWorkoutId
     private val _activeSessionId = MutableStateFlow<String?>(null)
@@ -181,6 +184,36 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
         viewModelScope.launch { database.dao().updateWorkoutExercise(workoutId, exerciseId, restSeconds, setCount) }
     }
 
+    fun createWorkout(title: String, subtitle: String) {
+        viewModelScope.launch {
+            val dao = database.dao()
+            val order = (dao.maxWorkoutOrder() ?: 0) + 1
+            val workout = WorkoutEntity(UUID.randomUUID().toString(), title.ifBlank { "Novo treino" }, subtitle.ifBlank { "Personalizado" }, order)
+            dao.insertWorkouts(listOf(workout))
+            val periodId = dao.allSettings().firstOrNull { it.key == "period_id" }?.value ?: "period-inicial"
+            dao.insertPeriodLink(WorkoutPeriodLinkEntity(workout.id, periodId))
+        }
+    }
+
+    fun addExercise(workoutId: String, exerciseId: String) {
+        viewModelScope.launch {
+            val rest = database.dao().allSettings().firstOrNull { it.key == "defaultRestSeconds" }?.value?.toIntOrNull() ?: 90
+            val order = database.dao().allWorkoutExercises().count { it.workoutId == workoutId } + 1
+            database.dao().insertWorkoutExercisesIfMissing(listOf(com.lamy.gymapp.data.WorkoutExerciseEntity(workoutId, exerciseId, order, rest, "10–12", 3)))
+        }
+    }
+
+    fun createNewPeriod(title: String) {
+        viewModelScope.launch {
+            val dao = database.dao()
+            dao.deactivatePeriods()
+            val period = TrainingPeriodEntity(UUID.randomUUID().toString(), title.ifBlank { "Nova sessão" }, System.currentTimeMillis(), true)
+            dao.insertPeriod(period)
+            dao.saveSetting(com.lamy.gymapp.data.AppSettingEntity("period_id", period.id))
+            dao.saveSetting(com.lamy.gymapp.data.AppSettingEntity("period_title", period.title))
+        }
+    }
+
     fun exercises(workoutId: String): Flow<List<WorkoutExerciseRow>> =
         database.dao().observeWorkoutExercises(workoutId)
 
@@ -204,7 +237,7 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
             val dao = database.dao()
             val root = JSONObject().put("format", "gym-app-backup").put("version", 1)
             fun array(block: JSONArray.() -> Unit) = JSONArray().apply(block)
-            val exercises = dao.allExercises(); val workouts = dao.allWorkouts(); val links = dao.allWorkoutExercises(); val profiles = dao.allLoadProfiles(); val sessions = dao.allSessions(); val sessionSets = dao.allSessionSets(); val settings = dao.allSettings()
+            val exercises = dao.allExercises(); val workouts = dao.allWorkouts(); val links = dao.allWorkoutExercises(); val profiles = dao.allLoadProfiles(); val sessions = dao.allSessions(); val sessionSets = dao.allSessionSets(); val settings = dao.allSettings(); val periods = dao.allPeriods(); val periodLinks = dao.allPeriodLinks()
             root.put("exercises", array { exercises.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("muscleGroup", it.muscleGroup)) } })
             root.put("workouts", array { workouts.forEach { put(JSONObject().put("id", it.id).put("title", it.title).put("subtitle", it.subtitle).put("sortOrder", it.sortOrder)) } })
             root.put("workoutExercises", array { links.forEach { put(JSONObject().put("workoutId", it.workoutId).put("exerciseId", it.exerciseId).put("sortOrder", it.sortOrder).put("restSeconds", it.restSeconds).put("plannedReps", it.plannedReps).put("setCount", it.setCount).put("plannedLoadsCsv", it.plannedLoadsCsv)) } })
@@ -212,6 +245,8 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
             root.put("sessions", array { sessions.forEach { put(JSONObject().put("id", it.id).put("workoutId", it.workoutId).put("startedAt", it.startedAt).put("finishedAt", it.finishedAt ?: JSONObject.NULL).put("completed", it.completed)) } })
             root.put("sessionSets", array { sessionSets.forEach { put(JSONObject().put("id", it.id).put("sessionId", it.sessionId).put("exerciseId", it.exerciseId).put("setIndex", it.setIndex).put("reps", it.reps ?: JSONObject.NULL).put("loadKg", it.loadKg ?: JSONObject.NULL).put("completed", it.completed).put("increaseMarked", it.increaseMarked)) } })
             root.put("settings", array { settings.forEach { put(JSONObject().put("key", it.key).put("value", it.value)) } })
+            root.put("periods", array { periods.forEach { put(JSONObject().put("id", it.id).put("title", it.title).put("startedAt", it.startedAt).put("active", it.active)) } })
+            root.put("periodLinks", array { periodLinks.forEach { put(JSONObject().put("workoutId", it.workoutId).put("periodId", it.periodId)) } })
             val success = runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(root.toString(2).toByteArray()) } != null }.getOrDefault(false)
             onDone(success)
         }
@@ -231,7 +266,12 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
                 val sessions = (0 until root.getJSONArray("sessions").length()).map { val o = root.getJSONArray("sessions").getJSONObject(it); com.lamy.gymapp.data.WorkoutSessionEntity(o.getString("id"), o.getString("workoutId"), o.getLong("startedAt"), if (o.isNull("finishedAt")) null else o.getLong("finishedAt"), o.getBoolean("completed")) }
                 val sessionSets = (0 until root.getJSONArray("sessionSets").length()).map { val o = root.getJSONArray("sessionSets").getJSONObject(it); com.lamy.gymapp.data.SessionSetEntity(o.getString("id"), o.getString("sessionId"), o.getString("exerciseId"), o.getInt("setIndex"), if (o.isNull("reps")) null else o.getInt("reps"), if (o.isNull("loadKg")) null else o.getDouble("loadKg"), o.getBoolean("completed"), o.getBoolean("increaseMarked")) }
                 val settings = (0 until root.getJSONArray("settings").length()).map { val o = root.getJSONArray("settings").getJSONObject(it); com.lamy.gymapp.data.AppSettingEntity(o.getString("key"), o.getString("value")) }
+                val periodArray = root.optJSONArray("periods")
+                val periodLinkArray = root.optJSONArray("periodLinks")
+                val periods = if (periodArray == null) emptyList() else (0 until periodArray.length()).map { val o = periodArray.getJSONObject(it); TrainingPeriodEntity(o.getString("id"), o.getString("title"), o.getLong("startedAt"), o.optBoolean("active", true)) }
+                val periodLinks = if (periodLinkArray == null) emptyList() else (0 until periodLinkArray.length()).map { val o = periodLinkArray.getJSONObject(it); WorkoutPeriodLinkEntity(o.getString("workoutId"), o.getString("periodId")) }
                 dao.insertExercises(exercises); dao.insertWorkouts(workouts); dao.insertWorkoutExercises(links); dao.saveLoadProfile(profiles)
+                periods.forEach { dao.insertPeriod(it) }; periodLinks.forEach { dao.insertPeriodLink(it) }
                 sessions.forEach { dao.insertSession(it) }; sessionSets.forEach { dao.saveSessionSet(it) }; settings.forEach { dao.saveSetting(it) }
             }.isSuccess
             onDone(success)
@@ -277,9 +317,9 @@ fun GymApp(viewModel: GymViewModel) {
             } else if (screen == "settings") {
                 SettingsScreen(viewModel = viewModel, onBack = { screen = "home" }, onEditWorkouts = { screen = "workouts" })
             } else if (screen == "workouts") {
-                WorkoutsScreen(workouts = workouts, onBack = { screen = "home" }, onOpenWorkout = { id -> viewModel.selectWorkout(id); viewModel.startSession(id); screen = "workout" }, onEditWorkout = { id -> viewModel.selectWorkout(id); screen = "edit" }, onDeleteWorkout = viewModel::deleteWorkout)
+                WorkoutsScreen(workouts = workouts, onBack = { screen = "home" }, onOpenWorkout = { id -> viewModel.selectWorkout(id); viewModel.startSession(id); screen = "workout" }, onEditWorkout = { id -> viewModel.selectWorkout(id); screen = "edit" }, onDeleteWorkout = viewModel::deleteWorkout, onCreateWorkout = viewModel::createWorkout)
             } else if (screen == "edit" && selectedId != null) {
-                EditWorkoutScreen(workout = workouts.firstOrNull { it.id == selectedId }, exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value, onBack = { screen = "workouts" }, onSave = { item, rest, sets -> viewModel.updateWorkoutExercise(selectedId!!, item.exerciseId, rest, sets) })
+                EditWorkoutScreen(workout = workouts.firstOrNull { it.id == selectedId }, exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value, catalog = viewModel.catalog.collectAsStateWithLifecycle(initialValue = emptyList()).value, onBack = { screen = "workouts" }, onAddExercise = { viewModel.addExercise(selectedId!!, it) }, onSave = { item, rest, sets -> viewModel.updateWorkoutExercise(selectedId!!, item.exerciseId, rest, sets) })
             } else if (screen == "history") {
                 HistoryScreen(
                     viewModel = viewModel,
@@ -312,6 +352,9 @@ private fun SettingsScreen(viewModel: GymViewModel, onBack: () -> Unit, onEditWo
         uri?.let { viewModel.importBackup(context, it) { ok -> backupMessage = if (ok) "Backup restaurado com sucesso." else "Arquivo de backup inválido." } }
     }
     val settings = viewModel.settings.collectAsStateWithLifecycle(initialValue = emptyList()).value.associate { it.key to it.value }
+    val activePeriod = viewModel.activePeriod.collectAsStateWithLifecycle(initialValue = null).value
+    var periodTitle by rememberSaveable(activePeriod?.id) { mutableStateOf(activePeriod?.title ?: settings["period_title"] ?: "Programa inicial") }
+    var showNewPeriod by remember { mutableStateOf(false) }
     var remindersEnabled by rememberSaveable(settings["remindersEnabled"]) { mutableStateOf(settings["remindersEnabled"] != "false") }
     var selectedRest by rememberSaveable(settings["defaultRestSeconds"]) { mutableIntStateOf(settings["defaultRestSeconds"]?.toIntOrNull() ?: 90) }
     var reminderTime by rememberSaveable(settings["reminderTime"]) { mutableStateOf(settings["reminderTime"] ?: "07:00") }
@@ -373,6 +416,11 @@ private fun SettingsScreen(viewModel: GymViewModel, onBack: () -> Unit, onEditWo
             Spacer(Modifier.height(10.dp))
             SettingsRow("Sons e vibração", "Ativo")
             SettingsRow("Editar treinos", "Abrir", onEditWorkouts)
+            Spacer(Modifier.height(10.dp))
+            Text("Sessão / período atual", color = Green, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+            Text("Use uma nova sessão quando seu programa de treino mudar. As cargas anteriores continuam disponíveis ao adicionar exercícios.", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+            OutlinedTextField(value = periodTitle, onValueChange = { periodTitle = it; viewModel.saveSetting("period_title", it) }, label = { Text("Título do período") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+            TextButton(onClick = { showNewPeriod = true }) { Text("+ Iniciar nova sessão", color = Green, fontWeight = FontWeight.Bold) }
             Spacer(Modifier.height(12.dp))
             Text("Dados e segurança", color = Green, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
             Text("O backup inclui treinos, cargas, sessões, histórico e configurações.", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
@@ -382,6 +430,11 @@ private fun SettingsScreen(viewModel: GymViewModel, onBack: () -> Unit, onEditWo
             }
             if (backupMessage.isNotBlank()) Text(backupMessage, color = Green, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
         }
+    }
+    if (showNewPeriod) {
+        AlertDialog(onDismissRequest = { showNewPeriod = false }, title = { Text("Nova sessão de treino") }, text = {
+            OutlinedTextField(value = periodTitle, onValueChange = { periodTitle = it }, label = { Text("Título / período") }, singleLine = true)
+        }, confirmButton = { TextButton(onClick = { viewModel.createNewPeriod(periodTitle); showNewPeriod = false }) { Text("Criar", color = Green) } }, dismissButton = { TextButton(onClick = { showNewPeriod = false }) { Text("Cancelar") } })
     }
 }
 
@@ -424,10 +477,8 @@ private fun HomeScreen(
             Spacer(Modifier.height(22.dp))
             Text("Menu", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(6.dp))
-            MenuRow("⌂", "Início", "Tela principal", {})
             MenuRow("▣", "Meus treinos", "Ver e iniciar todos os treinos", onWorkouts)
             MenuRow("◷", "Histórico", "Frequência e evolução de cargas", onHistory)
-            MenuRow("⚙", "Configurações", "Lembretes, dias e preferências", onSettings)
         }
     }
 }
@@ -448,8 +499,11 @@ private fun MenuRow(icon: String, title: String, subtitle: String, onClick: () -
 }
 
 @Composable
-private fun WorkoutsScreen(workouts: List<WorkoutEntity>, onBack: () -> Unit, onOpenWorkout: (String) -> Unit, onEditWorkout: (String) -> Unit, onDeleteWorkout: (String) -> Unit) {
+private fun WorkoutsScreen(workouts: List<WorkoutEntity>, onBack: () -> Unit, onOpenWorkout: (String) -> Unit, onEditWorkout: (String) -> Unit, onDeleteWorkout: (String) -> Unit, onCreateWorkout: (String, String) -> Unit) {
     var workoutToDelete by remember { mutableStateOf<WorkoutEntity?>(null) }
+    var showNewWorkout by remember { mutableStateOf(false) }
+    var newTitle by remember { mutableStateOf("") }
+    var newSubtitle by remember { mutableStateOf("") }
     if (workoutToDelete != null) {
         AlertDialog(
             onDismissRequest = { workoutToDelete = null },
@@ -462,6 +516,8 @@ private fun WorkoutsScreen(workouts: List<WorkoutEntity>, onBack: () -> Unit, on
     Scaffold(containerColor = AppBackground) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp)) {
             Header("Meus treinos", "Todos os treinos cadastrados", onBack)
+            Button(onClick = { showNewWorkout = true }, modifier = Modifier.fillMaxWidth()) { Text("+ Adicionar treino novo") }
+            Spacer(Modifier.height(8.dp))
             androidx.compose.foundation.lazy.LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(workouts.size) { index ->
                     val workout = workouts[index]
@@ -485,15 +541,26 @@ private fun WorkoutsScreen(workouts: List<WorkoutEntity>, onBack: () -> Unit, on
             }
         }
     }
+    if (showNewWorkout) {
+        AlertDialog(onDismissRequest = { showNewWorkout = false }, title = { Text("Adicionar treino") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value = newTitle, onValueChange = { newTitle = it }, label = { Text("Nome do treino") }, singleLine = true)
+                OutlinedTextField(value = newSubtitle, onValueChange = { newSubtitle = it }, label = { Text("Grupos musculares / descrição") }, singleLine = true)
+            }
+        }, confirmButton = { TextButton(onClick = { onCreateWorkout(newTitle, newSubtitle); newTitle = ""; newSubtitle = ""; showNewWorkout = false }) { Text("Adicionar", color = Green) } }, dismissButton = { TextButton(onClick = { showNewWorkout = false }) { Text("Cancelar") } })
+    }
 }
 
 @Composable
 private fun EditWorkoutScreen(
     workout: WorkoutEntity?,
     exercises: List<WorkoutExerciseRow>,
+    catalog: List<ExerciseEntity>,
     onBack: () -> Unit,
+    onAddExercise: (String) -> Unit,
     onSave: (WorkoutExerciseRow, Int, Int) -> Unit
 ) {
+    var showAddExercise by remember { mutableStateOf(false) }
     Scaffold(containerColor = AppBackground) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp)) {
             Header(
@@ -507,6 +574,8 @@ private fun EditWorkoutScreen(
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(bottom = 12.dp)
             )
+            Button(onClick = { showAddExercise = true }, modifier = Modifier.fillMaxWidth()) { Text("+ Adicionar exercício") }
+            Spacer(Modifier.height(8.dp))
             androidx.compose.foundation.lazy.LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(exercises.size) { index ->
                     val item = exercises[index]
@@ -551,6 +620,15 @@ private fun EditWorkoutScreen(
             }
         }
     }
+    if (showAddExercise) {
+        AlertDialog(onDismissRequest = { showAddExercise = false }, title = { Text("Adicionar exercício") }, text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                catalog.filter { item -> exercises.none { it.exerciseId == item.id } }.forEach { exercise ->
+                    TextButton(onClick = { onAddExercise(exercise.id); showAddExercise = false }, modifier = Modifier.fillMaxWidth()) { Text(exercise.name, color = Color(0xFF29463B)) }
+                }
+            }
+        }, confirmButton = { TextButton(onClick = { showAddExercise = false }) { Text("Fechar") } })
+    }
 }
 
 @Composable
@@ -574,7 +652,7 @@ private fun HistoryScreen(viewModel: GymViewModel, catalog: List<ExerciseEntity>
             Spacer(Modifier.height(18.dp))
             Text("Evolução por exercício", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.fillMaxWidth().height(210.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 catalog.filter { it.id != "walk" }.forEach { exercise ->
                     TextButton(onClick = { selectedExerciseId = exercise.id }) {
                         Text(exercise.name, color = if (exercise.id == selectedExerciseId) Green else Color(0xFF60786D), fontWeight = if (exercise.id == selectedExerciseId) FontWeight.Bold else FontWeight.Normal)
@@ -733,10 +811,12 @@ private fun ExerciseCard(
                 Spacer(Modifier.height(8.dp))
                 repeat(item.setCount) { setIndex ->
                     val preset = loadProfile.firstOrNull { it.setIndex == setIndex + 1 }?.lastUsedLoadKg
+                    val planned = item.plannedLoadsCsv.split(",").getOrNull(setIndex)?.trim()?.toDoubleOrNull()
+                    val effectivePreset = preset ?: planned
                     SetRow(
                         number = setIndex + 1,
                         reps = item.plannedReps,
-                        load = preset?.let { if (it % 1.0 == 0.0) "${it.toInt()} kg" else "$it kg" }.orEmpty(),
+                        load = effectivePreset?.let { if (it % 1.0 == 0.0) "${it.toInt()} kg" else "$it kg" }.orEmpty(),
                         completed = false,
                         onLoadChanged = { value -> value.toDoubleOrNull()?.let { onLoadChanged(setIndex + 1, it) } }
                         , onSetChanged = { loadKg, completed, increaseMarked -> onSetChanged(setIndex + 1, loadKg, completed, increaseMarked) }

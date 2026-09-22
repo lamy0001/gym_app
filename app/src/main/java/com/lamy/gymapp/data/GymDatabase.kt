@@ -26,6 +26,12 @@ data class SessionSetEntity(@PrimaryKey val id: String, val sessionId: String, v
 @Entity(tableName = "app_settings")
 data class AppSettingEntity(@PrimaryKey val key: String, val value: String)
 
+@Entity(tableName = "training_periods")
+data class TrainingPeriodEntity(@PrimaryKey val id: String, val title: String, val startedAt: Long, val active: Boolean = true)
+
+@Entity(tableName = "workout_period_links", primaryKeys = ["workoutId", "periodId"])
+data class WorkoutPeriodLinkEntity(val workoutId: String, val periodId: String)
+
 data class WorkoutExerciseRow(val exerciseId: String, val name: String, val muscleGroup: String, val restSeconds: Int, val plannedReps: String, val setCount: Int, val plannedLoadsCsv: String)
 
 @Dao
@@ -39,6 +45,7 @@ interface GymDao {
     @Query("SELECT * FROM workout_sessions WHERE completed = 1 ORDER BY finishedAt") fun observeCompletedSessions(): Flow<List<WorkoutSessionEntity>>
     @Query("SELECT * FROM session_sets WHERE exerciseId = :exerciseId AND completed = 1 AND loadKg IS NOT NULL ORDER BY rowid") fun observeExerciseHistory(exerciseId: String): Flow<List<SessionSetEntity>>
     @Query("SELECT * FROM app_settings") fun observeSettings(): Flow<List<AppSettingEntity>>
+    @Query("SELECT * FROM training_periods WHERE active = 1 ORDER BY startedAt DESC LIMIT 1") fun observeActivePeriod(): Flow<TrainingPeriodEntity?>
     @Query("SELECT * FROM exercises") suspend fun allExercises(): List<ExerciseEntity>
     @Query("SELECT * FROM workouts") suspend fun allWorkouts(): List<WorkoutEntity>
     @Query("SELECT * FROM workout_exercises") suspend fun allWorkoutExercises(): List<WorkoutExerciseEntity>
@@ -46,6 +53,9 @@ interface GymDao {
     @Query("SELECT * FROM workout_sessions") suspend fun allSessions(): List<WorkoutSessionEntity>
     @Query("SELECT * FROM session_sets") suspend fun allSessionSets(): List<SessionSetEntity>
     @Query("SELECT * FROM app_settings") suspend fun allSettings(): List<AppSettingEntity>
+    @Query("SELECT * FROM training_periods") suspend fun allPeriods(): List<TrainingPeriodEntity>
+    @Query("SELECT * FROM workout_period_links") suspend fun allPeriodLinks(): List<WorkoutPeriodLinkEntity>
+    @Query("SELECT MAX(sortOrder) FROM workouts") suspend fun maxWorkoutOrder(): Int?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertExercises(items: List<ExerciseEntity>)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertExercisesIfMissing(items: List<ExerciseEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertWorkouts(items: List<WorkoutEntity>)
@@ -55,17 +65,28 @@ interface GymDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertSession(session: WorkoutSessionEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun saveSessionSet(set: SessionSetEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun saveSetting(setting: AppSettingEntity)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertPeriod(period: TrainingPeriodEntity)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertPeriodLink(link: WorkoutPeriodLinkEntity)
+    @Query("UPDATE training_periods SET active = 0") suspend fun deactivatePeriods()
     @Query("DELETE FROM workout_exercises WHERE workoutId = :workoutId") suspend fun deleteWorkoutExercises(workoutId: String)
     @Query("DELETE FROM workouts WHERE id = :workoutId") suspend fun deleteWorkout(workoutId: String)
     @Query("UPDATE workout_exercises SET restSeconds = :restSeconds, setCount = :setCount WHERE workoutId = :workoutId AND exerciseId = :exerciseId") suspend fun updateWorkoutExercise(workoutId: String, exerciseId: String, restSeconds: Int, setCount: Int)
+    @Query("UPDATE workout_exercises SET plannedLoadsCsv = :loads WHERE workoutId = :workoutId AND exerciseId = :exerciseId") suspend fun updatePlannedLoads(workoutId: String, exerciseId: String, loads: String)
     @Query("UPDATE workout_sessions SET finishedAt = :finishedAt, completed = 1 WHERE id = :sessionId") suspend fun finishSession(sessionId: String, finishedAt: Long)
 }
 
-@Database(entities = [ExerciseEntity::class, WorkoutEntity::class, WorkoutExerciseEntity::class, ExerciseLoadProfileEntity::class, WorkoutSessionEntity::class, SessionSetEntity::class, AppSettingEntity::class], version = 2, exportSchema = false)
+@Database(entities = [ExerciseEntity::class, WorkoutEntity::class, WorkoutExerciseEntity::class, ExerciseLoadProfileEntity::class, WorkoutSessionEntity::class, SessionSetEntity::class, AppSettingEntity::class, TrainingPeriodEntity::class, WorkoutPeriodLinkEntity::class], version = 3, exportSchema = false)
 abstract class GymDatabase : RoomDatabase() {
     abstract fun dao(): GymDao
     companion object {
-        fun create(context: Context): GymDatabase = Room.databaseBuilder(context, GymDatabase::class.java, "gym_app.db").addMigrations(MIGRATION_1_2).build()
+        fun create(context: Context): GymDatabase = Room.databaseBuilder(context, GymDatabase::class.java, "gym_app.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+    }
+}
+
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS training_periods (id TEXT NOT NULL PRIMARY KEY, title TEXT NOT NULL, startedAt INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS workout_period_links (workoutId TEXT NOT NULL, periodId TEXT NOT NULL, PRIMARY KEY(workoutId, periodId))")
     }
 }
 
@@ -96,6 +117,13 @@ suspend fun GymDao.seedIfEmpty() {
 }
 
 suspend fun GymDao.ensureCatalog() {
+    if (allSettings().none { it.key == "period_id" }) {
+        val period = TrainingPeriodEntity("period-inicial", "Programa inicial", System.currentTimeMillis())
+        insertPeriod(period)
+        saveSetting(AppSettingEntity("period_id", period.id))
+        saveSetting(AppSettingEntity("period_title", period.title))
+        allWorkouts().forEach { insertPeriodLink(WorkoutPeriodLinkEntity(it.id, period.id)) }
+    }
     insertExercisesIfMissing(listOf(
         ExerciseEntity("scapula-cadence", "Aula posicionamento das escápulas e cadência", "Preparação"),
         ExerciseEntity("foot-spacing", "Aula afastamento dos pés", "Preparação"),
@@ -130,4 +158,40 @@ suspend fun GymDao.ensureCatalog() {
         WorkoutExerciseEntity("lower-2", "standing-calf", 9, 90, "10–12", 3),
         WorkoutExerciseEntity("lower-2", "scott-curl", 10, 75, "10–12", 3)
     ))
+    val defaultLoads = mapOf(
+        "supinated-pulldown" to listOf(6.0, 6.0, 7.0),
+        "pronated-row" to listOf(30.0, 35.0, 35.0),
+        "convergent-row" to listOf(22.5, 27.5, 27.5),
+        "face-pull" to listOf(7.0, 7.0, 7.0),
+        "dumbbell-bench" to listOf(30.0, 32.5, 35.0, 35.0),
+        "incline-machine-press" to listOf(20.0, 22.5, 25.0),
+        "machine-shoulder-press" to listOf(10.0, 10.0, 12.5),
+        "lateral-raise" to listOf(9.0, 9.0, 9.0),
+        "triceps-french" to listOf(20.0, 20.0, 20.0),
+        "neutral-row" to listOf(22.5, 22.5, 25.0),
+        "machine-bench" to listOf(22.5, 22.5, 25.0),
+        "close-grip-dumbbell" to listOf(30.0, 35.0, 35.0),
+        "triceps-forehead" to listOf(10.0, 10.0, 10.0),
+        "hip-thrust" to listOf(60.0, 60.0, 60.0, 90.0),
+        "free-squat" to listOf(15.0, 15.0, 20.0, 20.0),
+        "leg-press" to listOf(6.0, 6.0, 7.0, 7.0),
+        "leg-curl" to listOf(15.0, 15.0, 17.5, 17.5),
+        "leg-extension" to listOf(13.0, 13.0, 14.0),
+        "stiff" to listOf(10.0, 10.0, 10.0, 10.0),
+        "dumbbell-curl" to listOf(10.0, 10.0, 10.0),
+        "hack-squat" to listOf(20.0, 20.0, 22.5),
+        "standing-calf" to listOf(15.0, 15.0, 15.0),
+        "scott-curl" to listOf(12.0, 12.0, 12.0)
+    )
+    val existing = allLoadProfiles().map { "${it.exerciseId}:${it.setIndex}" }.toSet()
+    defaultLoads.flatMap { (exerciseId, loads) -> loads.mapIndexed { index, value -> ExerciseLoadProfileEntity(exerciseId, index + 1, value) } }
+        .filterNot { "${it.exerciseId}:${it.setIndex}" in existing }
+        .let { if (it.isNotEmpty()) saveLoadProfile(it) }
+    val plannedByWorkout = mapOf(
+        "upper-1:ankle-mobility" to "", "upper-1:supinated-pulldown" to "6,6,7", "upper-1:pronated-row" to "30,35,35", "upper-1:convergent-row" to "22.5,27.5,27.5", "upper-1:face-pull" to "7,7,7", "upper-1:dumbbell-bench" to "30,32.5,35,35", "upper-1:incline-machine-press" to "20,22.5,25", "upper-1:machine-shoulder-press" to "10,10,12.5", "upper-1:lateral-raise" to "9,9,9", "upper-1:triceps-french" to "20,20,20",
+        "upper-2:supinated-pulldown" to "8,6,7", "upper-2:neutral-row" to "22.5,22.5,25", "upper-2:machine-bench" to "22.5,22.5,25", "upper-2:machine-shoulder-press" to "10,10,12.5", "upper-2:close-grip-dumbbell" to "30,35,35", "upper-2:lateral-raise" to "9,9,9", "upper-2:triceps-forehead" to "10,10,10",
+        "lower-1:hip-thrust" to "60,60,60,90", "lower-1:free-squat" to "15,15,20,20", "lower-1:leg-press" to "6,6,7,7", "lower-1:leg-curl" to "15,15,17.5,17.5", "lower-1:leg-extension" to "13,13,14", "lower-1:stiff" to "10,10,10,10", "lower-1:dumbbell-curl" to "10,10,10",
+        "lower-2:hip-thrust" to "55,55,55", "lower-2:hack-squat" to "20,20,22.5", "lower-2:leg-extension" to "13,14,14", "lower-2:leg-curl" to "15,15,17.5", "lower-2:standing-calf" to "15,15,15", "lower-2:scott-curl" to "12,12,12"
+    )
+    plannedByWorkout.forEach { (key, loads) -> val parts = key.split(":"); updatePlannedLoads(parts[0], parts[1], loads) }
 }
