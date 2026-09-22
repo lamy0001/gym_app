@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Build
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
 import androidx.activity.viewModels
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -43,6 +44,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -89,9 +91,9 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-private val Green = Color(0xFF19B987)
-private val SoftGreen = Color(0xFFD9F6E9)
-private val AppBackground = Color(0xFFF4F7F5)
+private val Green = Color(0xFF47714D)
+private val SoftGreen = Color(0xFFDFEDDF)
+private val AppBackground = Color(0xFFF1F5F0)
 
 private const val ReminderRequestCode = 4107
 
@@ -166,7 +168,10 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
     }
 
     fun finishSession() {
-        _activeSessionId.value?.let { id -> viewModelScope.launch { database.dao().finishSession(id, System.currentTimeMillis()) } }
+        _activeSessionId.value?.let { id ->
+            _activeSessionId.value = null
+            viewModelScope.launch { database.dao().finishSession(id, System.currentTimeMillis()) }
+        }
     }
 
     fun saveSessionSet(sessionId: String, exerciseId: String, setIndex: Int, loadKg: Double?, completed: Boolean, increaseMarked: Boolean) {
@@ -310,18 +315,26 @@ fun GymApp(viewModel: GymViewModel) {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
             if (screen == "workout" && selectedId != null) {
+                val sessionId = viewModel.activeSessionId.collectAsStateWithLifecycle().value
+                val leaveWorkout = {
+                    viewModel.finishSession()
+                    screen = "home"
+                }
+                BackHandler(onBack = leaveWorkout)
                 WorkoutScreen(
                     viewModel = viewModel,
                     workoutId = selectedId!!,
-                    sessionId = viewModel.activeSessionId.collectAsStateWithLifecycle().value,
+                    sessionId = sessionId,
                     workout = workouts.firstOrNull { it.id == selectedId },
                     exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value,
-                    onBack = { viewModel.finishSession(); screen = "home" }
+                    onBack = leaveWorkout,
+                    onStartSession = { viewModel.startSession(selectedId!!) },
+                    onFinishSession = leaveWorkout
                 )
             } else if (screen == "settings") {
                 SettingsScreen(viewModel = viewModel, onBack = { screen = "home" }, onEditWorkouts = { screen = "workouts" })
             } else if (screen == "workouts") {
-                WorkoutsScreen(workouts = workouts, onBack = { screen = "home" }, onOpenWorkout = { id -> viewModel.selectWorkout(id); viewModel.startSession(id); screen = "workout" }, onEditWorkout = { id -> viewModel.selectWorkout(id); screen = "edit" }, onDeleteWorkout = viewModel::deleteWorkout, onCreateWorkout = viewModel::createWorkout)
+                WorkoutsScreen(workouts = workouts, onBack = { screen = "home" }, onOpenWorkout = { id -> viewModel.finishSession(); viewModel.selectWorkout(id); screen = "workout" }, onEditWorkout = { id -> viewModel.selectWorkout(id); screen = "edit" }, onDeleteWorkout = viewModel::deleteWorkout, onCreateWorkout = viewModel::createWorkout)
             } else if (screen == "edit" && selectedId != null) {
                 EditWorkoutScreen(workout = workouts.firstOrNull { it.id == selectedId }, exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value, catalog = viewModel.catalog.collectAsStateWithLifecycle(initialValue = emptyList()).value, onBack = { screen = "workouts" }, onAddExercise = { viewModel.addExercise(selectedId!!, it) }, onSave = { item, rest, sets, reps -> viewModel.updateWorkoutExerciseDetails(selectedId!!, item.exerciseId, rest, sets, reps) })
             } else if (screen == "history") {
@@ -335,7 +348,7 @@ fun GymApp(viewModel: GymViewModel) {
             } else {
                 HomeScreen(
                     workouts = workouts,
-                    onOpenWorkout = { id -> viewModel.selectWorkout(id); viewModel.startSession(id); screen = "workout" },
+                    onOpenWorkout = { id -> viewModel.finishSession(); viewModel.selectWorkout(id); screen = "workout" },
                     onSettings = { screen = "settings" },
                     onWorkouts = { screen = "workouts" },
                     onHistory = { screen = "history" }
@@ -753,7 +766,9 @@ private fun WorkoutScreen(
     sessionId: String?,
     workout: WorkoutEntity?,
     exercises: List<WorkoutExerciseRow>,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onStartSession: () -> Unit,
+    onFinishSession: () -> Unit
 ) {
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
     LaunchedEffect(exercises) { exercises.forEach { expanded[it.exerciseId] = true } }
@@ -764,8 +779,15 @@ private fun WorkoutScreen(
                 Column(Modifier.weight(1f)) {
                     Text("TREINO ${workout?.sortOrder ?: ""}", color = Green, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                     Text(workout?.title ?: "Treino", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("${exercises.size} exercícios", color = Color(0xFF60786D), style = MaterialTheme.typography.labelSmall)
                 }
-                Text("${exercises.size} exercícios", color = Color(0xFF60786D), style = MaterialTheme.typography.labelSmall)
+                Button(
+                    onClick = if (sessionId == null) onStartSession else onFinishSession,
+                    colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Color.White),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text(if (sessionId == null) "Iniciar treino" else "Finalizar treino", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                }
             }
             Text(workout?.subtitle.orEmpty(), color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(12.dp))

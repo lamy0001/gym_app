@@ -1,8 +1,8 @@
 <resources>
     <style name="Theme.GymApp" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#19B987</item>
-        <item name="android:navigationBarColor">#F4F7F5</item>
+        <item name="android:colorAccent">#47714D</item>
+        <item name="android:navigationBarColor">#F1F5F0</item>
         <item name="android:statusBarColor">#FFFFFF</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
