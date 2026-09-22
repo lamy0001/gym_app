@@ -18,7 +18,7 @@ data class WorkoutExerciseEntity(val workoutId: String, val exerciseId: String, 
 data class ExerciseLoadProfileEntity(val exerciseId: String, val setIndex: Int, val lastUsedLoadKg: Double)
 
 @Entity(tableName = "workout_sessions")
-data class WorkoutSessionEntity(@PrimaryKey val id: String, val workoutId: String, val startedAt: Long, val finishedAt: Long? = null, val completed: Boolean = false)
+data class WorkoutSessionEntity(@PrimaryKey val id: String, val workoutId: String, val startedAt: Long, val finishedAt: Long? = null, val completed: Boolean = false, val periodId: String? = null)
 
 @Entity(tableName = "session_sets")
 data class SessionSetEntity(@PrimaryKey val id: String, val sessionId: String, val exerciseId: String, val setIndex: Int, val reps: Int? = null, val loadKg: Double? = null, val completed: Boolean = false, val increaseMarked: Boolean = false)
@@ -37,15 +37,17 @@ data class WorkoutExerciseRow(val exerciseId: String, val name: String, val musc
 @Dao
 interface GymDao {
     @Query("SELECT * FROM workouts ORDER BY sortOrder") fun observeWorkouts(): Flow<List<WorkoutEntity>>
+    @Query("SELECT w.* FROM workouts w INNER JOIN workout_period_links l ON l.workoutId = w.id WHERE l.periodId = :periodId ORDER BY w.sortOrder") fun observeWorkoutsForPeriod(periodId: String): Flow<List<WorkoutEntity>>
     @Query("SELECT * FROM exercises ORDER BY name") fun observeExercises(): Flow<List<ExerciseEntity>>
     @Query("SELECT COUNT(*) FROM workouts") suspend fun workoutCount(): Int
     @Query("SELECT * FROM workout_exercises we INNER JOIN exercises e ON e.id = we.exerciseId WHERE we.workoutId = :workoutId ORDER BY we.sortOrder") fun observeWorkoutExercises(workoutId: String): Flow<List<WorkoutExerciseRow>>
     @Query("SELECT * FROM exercise_load_profiles WHERE exerciseId = :exerciseId ORDER BY setIndex") fun observeLoadProfile(exerciseId: String): Flow<List<ExerciseLoadProfileEntity>>
     @Query("SELECT COUNT(*) FROM workout_sessions WHERE completed = 1") fun observeCompletedSessionCount(): Flow<Int>
     @Query("SELECT * FROM workout_sessions WHERE completed = 1 ORDER BY finishedAt") fun observeCompletedSessions(): Flow<List<WorkoutSessionEntity>>
-    @Query("SELECT * FROM session_sets WHERE exerciseId = :exerciseId AND completed = 1 AND loadKg IS NOT NULL ORDER BY rowid") fun observeExerciseHistory(exerciseId: String): Flow<List<SessionSetEntity>>
+    @Query("SELECT ss.* FROM session_sets ss INNER JOIN workout_sessions ws ON ws.id = ss.sessionId WHERE ss.exerciseId = :exerciseId AND ss.completed = 1 AND ss.loadKg IS NOT NULL AND (:periodId IS NULL OR ws.periodId = :periodId) ORDER BY ws.finishedAt, ss.setIndex") fun observeExerciseHistory(exerciseId: String, periodId: String?): Flow<List<SessionSetEntity>>
     @Query("SELECT * FROM app_settings") fun observeSettings(): Flow<List<AppSettingEntity>>
     @Query("SELECT * FROM training_periods WHERE active = 1 ORDER BY startedAt DESC LIMIT 1") fun observeActivePeriod(): Flow<TrainingPeriodEntity?>
+    @Query("SELECT * FROM training_periods ORDER BY startedAt DESC") fun observePeriods(): Flow<List<TrainingPeriodEntity>>
     @Query("SELECT * FROM exercises") suspend fun allExercises(): List<ExerciseEntity>
     @Query("SELECT * FROM workouts") suspend fun allWorkouts(): List<WorkoutEntity>
     @Query("SELECT * FROM workout_exercises") suspend fun allWorkoutExercises(): List<WorkoutExerciseEntity>
@@ -55,7 +57,12 @@ interface GymDao {
     @Query("SELECT * FROM app_settings") suspend fun allSettings(): List<AppSettingEntity>
     @Query("SELECT * FROM training_periods") suspend fun allPeriods(): List<TrainingPeriodEntity>
     @Query("SELECT * FROM workout_period_links") suspend fun allPeriodLinks(): List<WorkoutPeriodLinkEntity>
+    @Query("SELECT * FROM workout_exercises WHERE workoutId = :workoutId ORDER BY sortOrder") suspend fun workoutExercises(workoutId: String): List<WorkoutExerciseEntity>
+    @Query("SELECT * FROM workouts WHERE id IN (SELECT workoutId FROM workout_period_links WHERE periodId = :periodId) ORDER BY sortOrder") suspend fun workoutsForPeriod(periodId: String): List<WorkoutEntity>
+    @Query("UPDATE training_periods SET title = :title WHERE id = :periodId") suspend fun renamePeriod(periodId: String, title: String)
+    @Query("DELETE FROM workout_period_links WHERE workoutId = :workoutId AND periodId = :periodId") suspend fun unlinkWorkout(workoutId: String, periodId: String)
     @Query("SELECT MAX(sortOrder) FROM workouts") suspend fun maxWorkoutOrder(): Int?
+    @Query("SELECT MAX(w.sortOrder) FROM workouts w INNER JOIN workout_period_links l ON l.workoutId = w.id WHERE l.periodId = :periodId") suspend fun maxWorkoutOrderForPeriod(periodId: String): Int?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertExercises(items: List<ExerciseEntity>)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertExercisesIfMissing(items: List<ExerciseEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertWorkouts(items: List<WorkoutEntity>)
@@ -68,6 +75,7 @@ interface GymDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertPeriod(period: TrainingPeriodEntity)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertPeriodLink(link: WorkoutPeriodLinkEntity)
     @Query("UPDATE training_periods SET active = 0") suspend fun deactivatePeriods()
+    @Query("UPDATE training_periods SET active = 1 WHERE id = :periodId") suspend fun activatePeriod(periodId: String)
     @Query("DELETE FROM workout_exercises WHERE workoutId = :workoutId") suspend fun deleteWorkoutExercises(workoutId: String)
     @Query("DELETE FROM workouts WHERE id = :workoutId") suspend fun deleteWorkout(workoutId: String)
     @Query("UPDATE workout_exercises SET restSeconds = :restSeconds, setCount = :setCount WHERE workoutId = :workoutId AND exerciseId = :exerciseId") suspend fun updateWorkoutExercise(workoutId: String, exerciseId: String, restSeconds: Int, setCount: Int)
@@ -76,11 +84,11 @@ interface GymDao {
     @Query("UPDATE workout_sessions SET finishedAt = :finishedAt, completed = 1 WHERE id = :sessionId") suspend fun finishSession(sessionId: String, finishedAt: Long)
 }
 
-@Database(entities = [ExerciseEntity::class, WorkoutEntity::class, WorkoutExerciseEntity::class, ExerciseLoadProfileEntity::class, WorkoutSessionEntity::class, SessionSetEntity::class, AppSettingEntity::class, TrainingPeriodEntity::class, WorkoutPeriodLinkEntity::class], version = 3, exportSchema = false)
+@Database(entities = [ExerciseEntity::class, WorkoutEntity::class, WorkoutExerciseEntity::class, ExerciseLoadProfileEntity::class, WorkoutSessionEntity::class, SessionSetEntity::class, AppSettingEntity::class, TrainingPeriodEntity::class, WorkoutPeriodLinkEntity::class], version = 4, exportSchema = false)
 abstract class GymDatabase : RoomDatabase() {
     abstract fun dao(): GymDao
     companion object {
-        fun create(context: Context): GymDatabase = Room.databaseBuilder(context, GymDatabase::class.java, "gym_app.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+        fun create(context: Context): GymDatabase = Room.databaseBuilder(context, GymDatabase::class.java, "gym_app.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
     }
 }
 
@@ -88,6 +96,18 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
     override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS training_periods (id TEXT NOT NULL PRIMARY KEY, title TEXT NOT NULL, startedAt INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1)")
         db.execSQL("CREATE TABLE IF NOT EXISTS workout_period_links (workoutId TEXT NOT NULL, periodId TEXT NOT NULL, PRIMARY KEY(workoutId, periodId))")
+    }
+}
+
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE workout_sessions ADD COLUMN periodId TEXT")
+        db.execSQL("INSERT OR IGNORE INTO training_periods (id, title, startedAt, active) SELECT 'period-inicial', 'Programa inicial', 0, 1 WHERE NOT EXISTS (SELECT 1 FROM training_periods)")
+        db.execSQL("UPDATE training_periods SET active = CASE WHEN id = COALESCE((SELECT value FROM app_settings WHERE \"key\" = 'period_id'), 'period-inicial') THEN 1 ELSE 0 END")
+        db.execSQL("UPDATE workout_sessions SET periodId = COALESCE((SELECT value FROM app_settings WHERE \"key\" = 'period_id'), 'period-inicial') WHERE periodId IS NULL")
+        db.execSQL("INSERT OR IGNORE INTO workout_period_links (workoutId, periodId) SELECT id, COALESCE((SELECT value FROM app_settings WHERE \"key\" = 'period_id'), 'period-inicial') FROM workouts")
+        db.execSQL("INSERT OR IGNORE INTO app_settings (\"key\", value) VALUES ('period_id', 'period-inicial')")
+        db.execSQL("INSERT OR IGNORE INTO app_settings (\"key\", value) VALUES ('period_title', 'Programa inicial')")
     }
 }
 

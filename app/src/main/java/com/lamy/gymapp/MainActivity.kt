@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -77,17 +78,23 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.room.Room
+import androidx.room.withTransaction
 import com.lamy.gymapp.data.GymDatabase
 import com.lamy.gymapp.data.WorkoutEntity
 import com.lamy.gymapp.data.ExerciseEntity
 import com.lamy.gymapp.data.WorkoutExerciseRow
 import com.lamy.gymapp.data.TrainingPeriodEntity
 import com.lamy.gymapp.data.WorkoutPeriodLinkEntity
+import com.lamy.gymapp.data.duplicateWorkoutTemplates
+import com.lamy.gymapp.data.sessionsInPeriod
+import com.lamy.gymapp.data.scheduledDaysThisWeek
 import com.lamy.gymapp.data.seedIfEmpty
 import com.lamy.gymapp.data.ensureCatalog
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.delay
 import java.util.UUID
 import kotlinx.coroutines.launch
@@ -148,6 +155,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class GymViewModel(private val database: GymDatabase) : ViewModel() {
     val workouts: Flow<List<WorkoutEntity>> = database.dao().observeWorkouts()
     val catalog: Flow<List<ExerciseEntity>> = database.dao().observeExercises()
@@ -155,6 +163,10 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
     val completedSessions: Flow<List<com.lamy.gymapp.data.WorkoutSessionEntity>> = database.dao().observeCompletedSessions()
     val settings: Flow<List<com.lamy.gymapp.data.AppSettingEntity>> = database.dao().observeSettings()
     val activePeriod: Flow<TrainingPeriodEntity?> = database.dao().observeActivePeriod()
+    val periods: Flow<List<TrainingPeriodEntity>> = database.dao().observePeriods()
+    val activePeriodWorkouts: Flow<List<WorkoutEntity>> = activePeriod.flatMapLatest { period ->
+        period?.let { database.dao().observeWorkoutsForPeriod(it.id) } ?: flowOf(emptyList())
+    }
     private val _selectedWorkoutId = MutableStateFlow<String?>(null)
     val selectedWorkoutId: StateFlow<String?> = _selectedWorkoutId
     private val _activeSessionId = MutableStateFlow<String?>(null)
@@ -164,10 +176,10 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
 
     fun selectWorkout(id: String) { _selectedWorkoutId.value = id }
 
-    fun startSession(workoutId: String) {
+    fun startSession(workoutId: String, periodId: String?) {
         val id = UUID.randomUUID().toString()
         _activeSessionId.value = id
-        viewModelScope.launch { database.dao().insertSession(com.lamy.gymapp.data.WorkoutSessionEntity(id, workoutId, System.currentTimeMillis())) }
+        viewModelScope.launch { database.dao().insertSession(com.lamy.gymapp.data.WorkoutSessionEntity(id, workoutId, System.currentTimeMillis(), periodId = periodId)) }
     }
 
     fun finishSession() {
@@ -184,8 +196,9 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
         }
     }
 
-    fun deleteWorkout(workoutId: String) {
-        viewModelScope.launch { database.dao().deleteWorkoutExercises(workoutId); database.dao().deleteWorkout(workoutId) }
+    fun removeWorkoutFromPeriod(workoutId: String, periodId: String?) {
+        if (periodId == null) return
+        viewModelScope.launch { database.dao().unlinkWorkout(workoutId, periodId) }
     }
 
     fun updateWorkoutExercise(workoutId: String, exerciseId: String, restSeconds: Int, setCount: Int) {
@@ -196,16 +209,17 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
         viewModelScope.launch { database.dao().updateWorkoutExerciseDetails(workoutId, exerciseId, restSeconds, setCount, plannedReps) }
     }
 
-    fun createWorkout(title: String, subtitle: String) {
+    fun createWorkout(title: String, subtitle: String, periodId: String?) {
         viewModelScope.launch {
             val dao = database.dao()
-            val order = (dao.maxWorkoutOrder() ?: 0) + 1
+            val order = (periodId?.let { dao.maxWorkoutOrderForPeriod(it) } ?: dao.maxWorkoutOrder() ?: 0) + 1
             val workout = WorkoutEntity(UUID.randomUUID().toString(), title.ifBlank { "Novo treino" }, subtitle.ifBlank { "Personalizado" }, order)
             dao.insertWorkouts(listOf(workout))
-            val periodId = dao.allSettings().firstOrNull { it.key == "period_id" }?.value ?: "period-inicial"
-            dao.insertPeriodLink(WorkoutPeriodLinkEntity(workout.id, periodId))
+            periodId?.let { dao.insertPeriodLink(WorkoutPeriodLinkEntity(workout.id, it)) }
         }
     }
+
+    fun workoutsForPeriod(periodId: String) = database.dao().observeWorkoutsForPeriod(periodId)
 
     fun addExercise(workoutId: String, exerciseId: String) {
         viewModelScope.launch {
@@ -215,14 +229,45 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
         }
     }
 
-    fun createNewPeriod(title: String) {
+    fun createNewPeriod(title: String, copyCurrentWorkouts: Boolean) {
         viewModelScope.launch {
             val dao = database.dao()
-            dao.deactivatePeriods()
-            val period = TrainingPeriodEntity(UUID.randomUUID().toString(), title.ifBlank { "Nova sessão" }, System.currentTimeMillis(), true)
-            dao.insertPeriod(period)
-            dao.saveSetting(com.lamy.gymapp.data.AppSettingEntity("period_id", period.id))
-            dao.saveSetting(com.lamy.gymapp.data.AppSettingEntity("period_title", period.title))
+            database.withTransaction {
+                val currentId = dao.allSettings().firstOrNull { it.key == "period_id" }?.value
+                val previousWorkouts = if (copyCurrentWorkouts && currentId != null) dao.workoutsForPeriod(currentId) else emptyList()
+                val newPeriod = TrainingPeriodEntity(UUID.randomUUID().toString(), title.trim().ifBlank { "Novo período" }, System.currentTimeMillis(), true)
+                dao.deactivatePeriods()
+                dao.insertPeriod(newPeriod)
+                val templates = previousWorkouts.map { workout -> workout to dao.workoutExercises(workout.id) }
+                duplicateWorkoutTemplates(templates) { UUID.randomUUID().toString() }.forEach { copy ->
+                    dao.insertWorkouts(listOf(copy.workout))
+                    if (copy.exercises.isNotEmpty()) dao.insertWorkoutExercises(copy.exercises)
+                    dao.insertPeriodLink(WorkoutPeriodLinkEntity(copy.workout.id, newPeriod.id))
+                }
+                dao.activatePeriod(newPeriod.id)
+                dao.saveSetting(com.lamy.gymapp.data.AppSettingEntity("period_id", newPeriod.id))
+                dao.saveSetting(com.lamy.gymapp.data.AppSettingEntity("period_title", newPeriod.title))
+            }
+        }
+    }
+
+    fun selectPeriod(period: TrainingPeriodEntity) {
+        viewModelScope.launch {
+            val dao = database.dao()
+            database.withTransaction {
+                dao.deactivatePeriods()
+                dao.activatePeriod(period.id)
+                dao.saveSetting(com.lamy.gymapp.data.AppSettingEntity("period_id", period.id))
+                dao.saveSetting(com.lamy.gymapp.data.AppSettingEntity("period_title", period.title))
+            }
+        }
+    }
+
+    fun renameActivePeriod(periodId: String, title: String) {
+        viewModelScope.launch {
+            val normalized = title.trim().ifBlank { return@launch }
+            database.dao().renamePeriod(periodId, normalized)
+            database.dao().saveSetting(com.lamy.gymapp.data.AppSettingEntity("period_title", normalized))
         }
     }
 
@@ -231,7 +276,7 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
 
     fun loadProfile(exerciseId: String) = database.dao().observeLoadProfile(exerciseId)
 
-    fun exerciseHistory(exerciseId: String) = database.dao().observeExerciseHistory(exerciseId)
+    fun exerciseHistory(exerciseId: String, periodId: String?) = database.dao().observeExerciseHistory(exerciseId, periodId)
 
     fun saveSetting(key: String, value: String) {
         viewModelScope.launch { database.dao().saveSetting(com.lamy.gymapp.data.AppSettingEntity(key, value)) }
@@ -254,7 +299,7 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
             root.put("workouts", array { workouts.forEach { put(JSONObject().put("id", it.id).put("title", it.title).put("subtitle", it.subtitle).put("sortOrder", it.sortOrder)) } })
             root.put("workoutExercises", array { links.forEach { put(JSONObject().put("workoutId", it.workoutId).put("exerciseId", it.exerciseId).put("sortOrder", it.sortOrder).put("restSeconds", it.restSeconds).put("plannedReps", it.plannedReps).put("setCount", it.setCount).put("plannedLoadsCsv", it.plannedLoadsCsv)) } })
             root.put("loadProfiles", array { profiles.forEach { put(JSONObject().put("exerciseId", it.exerciseId).put("setIndex", it.setIndex).put("lastUsedLoadKg", it.lastUsedLoadKg)) } })
-            root.put("sessions", array { sessions.forEach { put(JSONObject().put("id", it.id).put("workoutId", it.workoutId).put("startedAt", it.startedAt).put("finishedAt", it.finishedAt ?: JSONObject.NULL).put("completed", it.completed)) } })
+            root.put("sessions", array { sessions.forEach { put(JSONObject().put("id", it.id).put("workoutId", it.workoutId).put("startedAt", it.startedAt).put("finishedAt", it.finishedAt ?: JSONObject.NULL).put("completed", it.completed).put("periodId", it.periodId ?: JSONObject.NULL)) } })
             root.put("sessionSets", array { sessionSets.forEach { put(JSONObject().put("id", it.id).put("sessionId", it.sessionId).put("exerciseId", it.exerciseId).put("setIndex", it.setIndex).put("reps", it.reps ?: JSONObject.NULL).put("loadKg", it.loadKg ?: JSONObject.NULL).put("completed", it.completed).put("increaseMarked", it.increaseMarked)) } })
             root.put("settings", array { settings.forEach { put(JSONObject().put("key", it.key).put("value", it.value)) } })
             root.put("periods", array { periods.forEach { put(JSONObject().put("id", it.id).put("title", it.title).put("startedAt", it.startedAt).put("active", it.active)) } })
@@ -275,7 +320,7 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
                 val workouts = (0 until root.getJSONArray("workouts").length()).map { val o = root.getJSONArray("workouts").getJSONObject(it); WorkoutEntity(o.getString("id"), o.getString("title"), o.getString("subtitle"), o.getInt("sortOrder")) }
                 val links = (0 until root.getJSONArray("workoutExercises").length()).map { val o = root.getJSONArray("workoutExercises").getJSONObject(it); com.lamy.gymapp.data.WorkoutExerciseEntity(o.getString("workoutId"), o.getString("exerciseId"), o.getInt("sortOrder"), o.getInt("restSeconds"), o.getString("plannedReps"), o.optInt("setCount", 3), o.optString("plannedLoadsCsv", "")) }
                 val profiles = (0 until root.getJSONArray("loadProfiles").length()).map { val o = root.getJSONArray("loadProfiles").getJSONObject(it); com.lamy.gymapp.data.ExerciseLoadProfileEntity(o.getString("exerciseId"), o.getInt("setIndex"), o.getDouble("lastUsedLoadKg")) }
-                val sessions = (0 until root.getJSONArray("sessions").length()).map { val o = root.getJSONArray("sessions").getJSONObject(it); com.lamy.gymapp.data.WorkoutSessionEntity(o.getString("id"), o.getString("workoutId"), o.getLong("startedAt"), if (o.isNull("finishedAt")) null else o.getLong("finishedAt"), o.getBoolean("completed")) }
+                val sessions = (0 until root.getJSONArray("sessions").length()).map { val o = root.getJSONArray("sessions").getJSONObject(it); com.lamy.gymapp.data.WorkoutSessionEntity(o.getString("id"), o.getString("workoutId"), o.getLong("startedAt"), if (o.isNull("finishedAt")) null else o.getLong("finishedAt"), o.getBoolean("completed"), if (o.isNull("periodId")) null else o.optString("periodId").takeIf(String::isNotBlank)) }
                 val sessionSets = (0 until root.getJSONArray("sessionSets").length()).map { val o = root.getJSONArray("sessionSets").getJSONObject(it); com.lamy.gymapp.data.SessionSetEntity(o.getString("id"), o.getString("sessionId"), o.getString("exerciseId"), o.getInt("setIndex"), if (o.isNull("reps")) null else o.getInt("reps"), if (o.isNull("loadKg")) null else o.getDouble("loadKg"), o.getBoolean("completed"), o.getBoolean("increaseMarked")) }
                 val settings = (0 until root.getJSONArray("settings").length()).map { val o = root.getJSONArray("settings").getJSONObject(it); com.lamy.gymapp.data.AppSettingEntity(o.getString("key"), o.getString("value")) }
                 val periodArray = root.optJSONArray("periods")
@@ -312,6 +357,9 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
 @Composable
 fun GymApp(viewModel: GymViewModel) {
     val workouts by viewModel.workouts.collectAsStateWithLifecycle(initialValue = emptyList())
+    val activePeriod = viewModel.activePeriod.collectAsStateWithLifecycle(initialValue = null).value
+    val periods = viewModel.periods.collectAsStateWithLifecycle(initialValue = emptyList()).value
+    val periodWorkouts = viewModel.activePeriodWorkouts.collectAsStateWithLifecycle(initialValue = emptyList()).value
     val selectedId by viewModel.selectedWorkoutId.collectAsStateWithLifecycle()
     var screen by remember { mutableStateOf("home") }
 
@@ -331,13 +379,24 @@ fun GymApp(viewModel: GymViewModel) {
                     workout = workouts.firstOrNull { it.id == selectedId },
                     exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value,
                     onBack = leaveWorkout,
-                    onStartSession = { viewModel.startSession(selectedId!!) },
+                    onStartSession = { viewModel.startSession(selectedId!!, activePeriod?.id) },
                     onFinishSession = leaveWorkout
                 )
             } else if (screen == "settings") {
                 SettingsScreen(viewModel = viewModel, onBack = { screen = "home" }, onEditWorkouts = { screen = "workouts" })
             } else if (screen == "workouts") {
-                WorkoutsScreen(workouts = workouts, onBack = { screen = "home" }, onOpenWorkout = { id -> viewModel.finishSession(); viewModel.selectWorkout(id); screen = "workout" }, onEditWorkout = { id -> viewModel.selectWorkout(id); screen = "edit" }, onDeleteWorkout = viewModel::deleteWorkout, onCreateWorkout = viewModel::createWorkout)
+                WorkoutsScreen(
+                    workouts = periodWorkouts,
+                    activePeriod = activePeriod,
+                    periods = periods,
+                    onBack = { screen = "home" },
+                    onOpenWorkout = { id -> viewModel.finishSession(); viewModel.selectWorkout(id); screen = "workout" },
+                    onEditWorkout = { id -> viewModel.selectWorkout(id); screen = "edit" },
+                    onRemoveWorkout = { id -> viewModel.removeWorkoutFromPeriod(id, activePeriod?.id) },
+                    onCreateWorkout = { title, subtitle -> viewModel.createWorkout(title, subtitle, activePeriod?.id) },
+                    onCreatePeriod = viewModel::createNewPeriod,
+                    onSelectPeriod = viewModel::selectPeriod
+                )
             } else if (screen == "edit" && selectedId != null) {
                 EditWorkoutScreen(workout = workouts.firstOrNull { it.id == selectedId }, exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value, catalog = viewModel.catalog.collectAsStateWithLifecycle(initialValue = emptyList()).value, onBack = { screen = "workouts" }, onAddExercise = { viewModel.addExercise(selectedId!!, it) }, onSave = { item, rest, sets, reps -> viewModel.updateWorkoutExerciseDetails(selectedId!!, item.exerciseId, rest, sets, reps) })
             } else if (screen == "history") {
@@ -345,12 +404,14 @@ fun GymApp(viewModel: GymViewModel) {
                     viewModel = viewModel,
                     catalog = viewModel.catalog.collectAsStateWithLifecycle(initialValue = emptyList()).value,
                     onBack = { screen = "home" },
-                    completedSessions = viewModel.completedSessionCount.collectAsStateWithLifecycle(initialValue = 0).value,
-                    sessions = viewModel.completedSessions.collectAsStateWithLifecycle(initialValue = emptyList()).value
+                    sessions = viewModel.completedSessions.collectAsStateWithLifecycle(initialValue = emptyList()).value,
+                    periods = periods,
+                    activePeriodId = activePeriod?.id
                 )
             } else {
                 HomeScreen(
-                    workouts = workouts,
+                    workouts = periodWorkouts,
+                    periodTitle = activePeriod?.title ?: "Programa inicial",
                     onOpenWorkout = { id -> viewModel.finishSession(); viewModel.selectWorkout(id); screen = "workout" },
                     onSettings = { screen = "settings" },
                     onWorkouts = { screen = "workouts" },
@@ -374,7 +435,6 @@ private fun SettingsScreen(viewModel: GymViewModel, onBack: () -> Unit, onEditWo
     val settings = viewModel.settings.collectAsStateWithLifecycle(initialValue = emptyList()).value.associate { it.key to it.value }
     val activePeriod = viewModel.activePeriod.collectAsStateWithLifecycle(initialValue = null).value
     var periodTitle by rememberSaveable(activePeriod?.id) { mutableStateOf(activePeriod?.title ?: settings["period_title"] ?: "Programa inicial") }
-    var showNewPeriod by remember { mutableStateOf(false) }
     var remindersEnabled by rememberSaveable(settings["remindersEnabled"]) { mutableStateOf(settings["remindersEnabled"] != "false") }
     var selectedRest by rememberSaveable(settings["defaultRestSeconds"]) { mutableIntStateOf(settings["defaultRestSeconds"]?.toIntOrNull() ?: 90) }
     var reminderTime by rememberSaveable(settings["reminderTime"]) { mutableStateOf(settings["reminderTime"] ?: "07:00") }
@@ -439,8 +499,8 @@ private fun SettingsScreen(viewModel: GymViewModel, onBack: () -> Unit, onEditWo
             Spacer(Modifier.height(10.dp))
             Text("Sessão / período atual", color = Green, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
             Text("Use uma nova sessão quando seu programa de treino mudar. As cargas anteriores continuam disponíveis ao adicionar exercícios.", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
-            OutlinedTextField(value = periodTitle, onValueChange = { periodTitle = it; viewModel.saveSetting("period_title", it) }, label = { Text("Título do período") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-            TextButton(onClick = { showNewPeriod = true }) { Text("+ Iniciar nova sessão", color = Green, fontWeight = FontWeight.Bold) }
+            OutlinedTextField(value = periodTitle, onValueChange = { periodTitle = it; activePeriod?.let { period -> viewModel.renameActivePeriod(period.id, it) } }, label = { Text("Título do período") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+            TextButton(onClick = onEditWorkouts) { Text("Gerenciar ciclos e treinos", color = Green, fontWeight = FontWeight.Bold) }
             Spacer(Modifier.height(12.dp))
             Text("Dados e segurança", color = Green, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
             Text("O backup inclui treinos, cargas, sessões, histórico e configurações.", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
@@ -450,11 +510,6 @@ private fun SettingsScreen(viewModel: GymViewModel, onBack: () -> Unit, onEditWo
             }
             if (backupMessage.isNotBlank()) Text(backupMessage, color = Green, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
         }
-    }
-    if (showNewPeriod) {
-        AlertDialog(onDismissRequest = { showNewPeriod = false }, title = { Text("Nova sessão de treino") }, text = {
-            OutlinedTextField(value = periodTitle, onValueChange = { periodTitle = it }, label = { Text("Título / período") }, singleLine = true)
-        }, confirmButton = { TextButton(onClick = { viewModel.createNewPeriod(periodTitle); showNewPeriod = false }) { Text("Criar", color = Green) } }, dismissButton = { TextButton(onClick = { showNewPeriod = false }) { Text("Cancelar") } })
     }
 }
 
@@ -472,6 +527,7 @@ private fun SettingsRow(title: String, value: String, onClick: (() -> Unit)? = n
 @Composable
 private fun HomeScreen(
     workouts: List<WorkoutEntity>,
+    periodTitle: String,
     onOpenWorkout: (String) -> Unit,
     onSettings: () -> Unit,
     onWorkouts: () -> Unit,
@@ -487,7 +543,7 @@ private fun HomeScreen(
                 IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Configurações") }
             }
             Spacer(Modifier.height(18.dp))
-            Text("Treinos", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("$periodTitle · ${workouts.size} treinos", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(10.dp))
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 workouts.forEach { workout ->
@@ -497,7 +553,7 @@ private fun HomeScreen(
             Spacer(Modifier.height(22.dp))
             Text("Menu", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(6.dp))
-            MenuRow("▣", "Meus treinos", "Ver e iniciar todos os treinos", onWorkouts)
+            MenuRow("▣", "Meus treinos", "Ver e iniciar os treinos deste período", onWorkouts)
             MenuRow("◷", "Histórico", "Frequência e evolução de cargas", onHistory)
         }
     }
@@ -519,24 +575,44 @@ private fun MenuRow(icon: String, title: String, subtitle: String, onClick: () -
 }
 
 @Composable
-private fun WorkoutsScreen(workouts: List<WorkoutEntity>, onBack: () -> Unit, onOpenWorkout: (String) -> Unit, onEditWorkout: (String) -> Unit, onDeleteWorkout: (String) -> Unit, onCreateWorkout: (String, String) -> Unit) {
+private fun WorkoutsScreen(
+    workouts: List<WorkoutEntity>,
+    activePeriod: TrainingPeriodEntity?,
+    periods: List<TrainingPeriodEntity>,
+    onBack: () -> Unit,
+    onOpenWorkout: (String) -> Unit,
+    onEditWorkout: (String) -> Unit,
+    onRemoveWorkout: (String) -> Unit,
+    onCreateWorkout: (String, String) -> Unit,
+    onCreatePeriod: (String, Boolean) -> Unit,
+    onSelectPeriod: (TrainingPeriodEntity) -> Unit
+) {
     var workoutToDelete by remember { mutableStateOf<WorkoutEntity?>(null) }
     var showNewWorkout by remember { mutableStateOf(false) }
+    var showPeriods by remember { mutableStateOf(false) }
+    var showNewPeriod by remember { mutableStateOf(false) }
     var newTitle by remember { mutableStateOf("") }
     var newSubtitle by remember { mutableStateOf("") }
+    var newPeriodTitle by remember { mutableStateOf("") }
+    var copyWorkouts by remember { mutableStateOf(true) }
     if (workoutToDelete != null) {
         AlertDialog(
             onDismissRequest = { workoutToDelete = null },
             title = { Text("Excluir treino?") },
-            text = { Text("O treino ${workoutToDelete!!.sortOrder} · ${workoutToDelete!!.title} será removido. O histórico de sessões será preservado.") },
-            confirmButton = { TextButton(onClick = { onDeleteWorkout(workoutToDelete!!.id); workoutToDelete = null }) { Text("Excluir", color = Color(0xFFB54D49)) } },
+            text = { Text("${workoutToDelete!!.title} será removido deste período. O treino dos períodos anteriores e o histórico serão preservados.") },
+            confirmButton = { TextButton(onClick = { onRemoveWorkout(workoutToDelete!!.id); workoutToDelete = null }) { Text("Remover", color = Color(0xFFB54D49)) } },
             dismissButton = { TextButton(onClick = { workoutToDelete = null }) { Text("Cancelar") } }
         )
     }
     Scaffold(containerColor = AppBackground) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp)) {
-            Header("Meus treinos", "Todos os treinos cadastrados", onBack)
+            Header("Meus treinos", activePeriod?.title ?: "Período não selecionado", onBack)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { showPeriods = true }, modifier = Modifier.weight(1f)) { Text("Trocar / ver períodos", color = Green) }
+                TextButton(onClick = { newPeriodTitle = ""; copyWorkouts = true; showNewPeriod = true }, modifier = Modifier.weight(1f)) { Text("+ Novo período", color = Green) }
+            }
             Button(onClick = { showNewWorkout = true }, modifier = Modifier.fillMaxWidth()) { Text("+ Adicionar treino novo") }
+            Text("${workouts.size} treinos neste período", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp, bottom = 2.dp))
             Spacer(Modifier.height(8.dp))
             androidx.compose.foundation.lazy.LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(workouts.size) { index ->
@@ -569,6 +645,49 @@ private fun WorkoutsScreen(workouts: List<WorkoutEntity>, onBack: () -> Unit, on
             }
         }, confirmButton = { TextButton(onClick = { onCreateWorkout(newTitle, newSubtitle); newTitle = ""; newSubtitle = ""; showNewWorkout = false }) { Text("Adicionar", color = Green) } }, dismissButton = { TextButton(onClick = { showNewWorkout = false }) { Text("Cancelar") } })
     }
+    if (showPeriods) {
+        PeriodPickerDialog(periods, activePeriod?.id, onDismiss = { showPeriods = false }, onSelect = { onSelectPeriod(it); showPeriods = false })
+    }
+    if (showNewPeriod) {
+        AlertDialog(
+            onDismissRequest = { showNewPeriod = false },
+            title = { Text("Iniciar novo período") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = newPeriodTitle, onValueChange = { newPeriodTitle = it }, label = { Text("Nome do período") }, placeholder = { Text("Ex.: Hipertrofia · Set–Nov") }, singleLine = true)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = copyWorkouts, onCheckedChange = { copyWorkouts = it })
+                        Text("Copiar os treinos deste período", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text("A cópia permite mudar exercícios e séries sem alterar o ciclo anterior. O histórico e as cargas por exercício continuam preservados e compartilhados.", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = { TextButton(onClick = { onCreatePeriod(newPeriodTitle, copyWorkouts); showNewPeriod = false }) { Text("Criar período", color = Green) } },
+            dismissButton = { TextButton(onClick = { showNewPeriod = false }) { Text("Cancelar") } }
+        )
+    }
+}
+
+@Composable
+private fun PeriodPickerDialog(periods: List<TrainingPeriodEntity>, selectedId: String?, onDismiss: () -> Unit, onSelect: (TrainingPeriodEntity) -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Períodos de treino") },
+        text = {
+            Column(Modifier.height(300.dp).verticalScroll(rememberScrollState())) {
+                periods.forEach { period ->
+                    TextButton(onClick = { onSelect(period) }, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.fillMaxWidth()) {
+                            Text((if (period.id == selectedId) "✓ ATIVO · " else "") + period.title, color = if (period.id == selectedId) Green else Color(0xFF263A2B), fontWeight = FontWeight.Bold)
+                            Text(java.text.DateFormat.getDateInstance().format(java.util.Date(period.startedAt)), color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                if (periods.isEmpty()) Text("Nenhum período cadastrado ainda.", color = Color(0xFF60786D))
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Fechar", color = Green) } }
+    )
 }
 
 @Composable
@@ -661,20 +780,35 @@ private fun EditWorkoutScreen(
 }
 
 @Composable
-private fun HistoryScreen(viewModel: GymViewModel, catalog: List<ExerciseEntity>, onBack: () -> Unit, completedSessions: Int, sessions: List<com.lamy.gymapp.data.WorkoutSessionEntity>) {
+private fun HistoryScreen(
+    viewModel: GymViewModel,
+    catalog: List<ExerciseEntity>,
+    onBack: () -> Unit,
+    sessions: List<com.lamy.gymapp.data.WorkoutSessionEntity>,
+    periods: List<TrainingPeriodEntity>,
+    activePeriodId: String?
+) {
     var selectedExerciseId by rememberSaveable { mutableStateOf("supinated-pulldown") }
-    val loadHistory = viewModel.exerciseHistory(selectedExerciseId).collectAsStateWithLifecycle(initialValue = emptyList()).value
+    var selectedPeriodId by rememberSaveable(activePeriodId) { mutableStateOf(activePeriodId) }
+    var showPeriodPicker by remember { mutableStateOf(false) }
+    val loadHistory = viewModel.exerciseHistory(selectedExerciseId, selectedPeriodId).collectAsStateWithLifecycle(initialValue = emptyList()).value
+    val periodSessions = sessionsInPeriod(sessions, selectedPeriodId)
     val today = java.time.LocalDate.now()
-    val monday = today.minusDays((today.dayOfWeek.value - 1).toLong())
-    val scheduledDays = sessions.mapNotNull { it.finishedAt?.let { timestamp -> java.time.Instant.ofEpochMilli(timestamp).atZone(java.time.ZoneId.systemDefault()).toLocalDate() } }.filter { it in monday..today && it.dayOfWeek.value <= 5 }.distinct().size
     val selectedName = catalog.firstOrNull { it.id == selectedExerciseId }?.name ?: "Selecione um exercício"
     Scaffold(containerColor = AppBackground) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp)) {
             Header("Histórico", "Frequência e evolução", onBack)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { showPeriodPicker = true }) {
+                    Text("Período: ${periods.firstOrNull { it.id == selectedPeriodId }?.title ?: "Selecione um período"}  ▾", color = Green, fontWeight = FontWeight.Bold)
+                }
+            }
+            val selectedPeriodSessions = periodSessions
+            val selectedPeriodDays = scheduledDaysThisWeek(selectedPeriodSessions, today, java.time.ZoneId.systemDefault())
             Card(colors = CardDefaults.cardColors(containerColor = SoftGreen), shape = RoundedCornerShape(18.dp)) {
                 Column(Modifier.padding(16.dp)) {
                     Text("Frequência nos dias programados", color = Green, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    Text("$scheduledDays de 5 dias", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("$selectedPeriodDays de 5 dias", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                     Text("Segunda a sexta · fins de semana não quebram a sequência", color = Color(0xFF527468), style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -713,10 +847,13 @@ private fun HistoryScreen(viewModel: GymViewModel, catalog: List<ExerciseEntity>
                 }
             }
             Spacer(Modifier.height(14.dp))
-            HistoryMetric("Treinos concluídos", completedSessions.toString())
-            HistoryMetric("Dias programados nesta semana", "$scheduledDays de 5")
+            HistoryMetric("Treinos concluídos neste período", selectedPeriodSessions.size.toString())
+            HistoryMetric("Dias programados nesta semana", "$selectedPeriodDays de 5")
             HistoryMetric("Exercício selecionado", selectedName)
         }
+    }
+    if (showPeriodPicker) {
+        PeriodPickerDialog(periods, selectedPeriodId, onDismiss = { showPeriodPicker = false }, onSelect = { selectedPeriodId = it.id; showPeriodPicker = false })
     }
 }
 
