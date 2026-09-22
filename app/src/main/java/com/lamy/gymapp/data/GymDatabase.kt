@@ -31,10 +31,12 @@ data class WorkoutExerciseRow(val exerciseId: String, val name: String, val musc
 @Dao
 interface GymDao {
     @Query("SELECT * FROM workouts ORDER BY sortOrder") fun observeWorkouts(): Flow<List<WorkoutEntity>>
+    @Query("SELECT * FROM exercises ORDER BY name") fun observeExercises(): Flow<List<ExerciseEntity>>
     @Query("SELECT COUNT(*) FROM workouts") suspend fun workoutCount(): Int
     @Query("SELECT * FROM workout_exercises we INNER JOIN exercises e ON e.id = we.exerciseId WHERE we.workoutId = :workoutId ORDER BY we.sortOrder") fun observeWorkoutExercises(workoutId: String): Flow<List<WorkoutExerciseRow>>
     @Query("SELECT * FROM exercise_load_profiles WHERE exerciseId = :exerciseId ORDER BY setIndex") fun observeLoadProfile(exerciseId: String): Flow<List<ExerciseLoadProfileEntity>>
     @Query("SELECT COUNT(*) FROM workout_sessions WHERE completed = 1") fun observeCompletedSessionCount(): Flow<Int>
+    @Query("SELECT * FROM workout_sessions WHERE completed = 1 ORDER BY finishedAt") fun observeCompletedSessions(): Flow<List<WorkoutSessionEntity>>
     @Query("SELECT * FROM session_sets WHERE exerciseId = :exerciseId AND completed = 1 AND loadKg IS NOT NULL ORDER BY rowid") fun observeExerciseHistory(exerciseId: String): Flow<List<SessionSetEntity>>
     @Query("SELECT * FROM app_settings") fun observeSettings(): Flow<List<AppSettingEntity>>
     @Query("SELECT * FROM exercises") suspend fun allExercises(): List<ExerciseEntity>

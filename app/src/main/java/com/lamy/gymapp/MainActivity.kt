@@ -73,6 +73,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.room.Room
 import com.lamy.gymapp.data.GymDatabase
 import com.lamy.gymapp.data.WorkoutEntity
+import com.lamy.gymapp.data.ExerciseEntity
 import com.lamy.gymapp.data.WorkoutExerciseRow
 import com.lamy.gymapp.data.seedIfEmpty
 import com.lamy.gymapp.data.ensureCatalog
@@ -141,7 +142,9 @@ class MainActivity : ComponentActivity() {
 
 class GymViewModel(private val database: GymDatabase) : ViewModel() {
     val workouts: Flow<List<WorkoutEntity>> = database.dao().observeWorkouts()
+    val catalog: Flow<List<ExerciseEntity>> = database.dao().observeExercises()
     val completedSessionCount: Flow<Int> = database.dao().observeCompletedSessionCount()
+    val completedSessions: Flow<List<com.lamy.gymapp.data.WorkoutSessionEntity>> = database.dao().observeCompletedSessions()
     val settings: Flow<List<com.lamy.gymapp.data.AppSettingEntity>> = database.dao().observeSettings()
     private val _selectedWorkoutId = MutableStateFlow<String?>(null)
     val selectedWorkoutId: StateFlow<String?> = _selectedWorkoutId
@@ -278,9 +281,11 @@ fun GymApp(viewModel: GymViewModel) {
                 EditWorkoutScreen(workout = workouts.firstOrNull { it.id == selectedId }, exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value, onBack = { screen = "workouts" }, onSave = { item, rest, sets -> viewModel.updateWorkoutExercise(selectedId!!, item.exerciseId, rest, sets) })
             } else if (screen == "history") {
                 HistoryScreen(
+                    viewModel = viewModel,
+                    catalog = viewModel.catalog.collectAsStateWithLifecycle(initialValue = emptyList()).value,
                     onBack = { screen = "home" },
                     completedSessions = viewModel.completedSessionCount.collectAsStateWithLifecycle(initialValue = 0).value,
-                    loadHistory = viewModel.exerciseHistory("supinated-pulldown").collectAsStateWithLifecycle(initialValue = emptyList()).value
+                    sessions = viewModel.completedSessions.collectAsStateWithLifecycle(initialValue = emptyList()).value
                 )
             } else {
                 HomeScreen(
@@ -548,23 +553,36 @@ private fun EditWorkoutScreen(
 }
 
 @Composable
-private fun HistoryScreen(onBack: () -> Unit, completedSessions: Int, loadHistory: List<com.lamy.gymapp.data.SessionSetEntity>) {
+private fun HistoryScreen(viewModel: GymViewModel, catalog: List<ExerciseEntity>, onBack: () -> Unit, completedSessions: Int, sessions: List<com.lamy.gymapp.data.WorkoutSessionEntity>) {
+    var selectedExerciseId by rememberSaveable { mutableStateOf("supinated-pulldown") }
+    val loadHistory = viewModel.exerciseHistory(selectedExerciseId).collectAsStateWithLifecycle(initialValue = emptyList()).value
+    val today = java.time.LocalDate.now()
+    val monday = today.minusDays((today.dayOfWeek.value - 1).toLong())
+    val scheduledDays = sessions.mapNotNull { it.finishedAt?.let { timestamp -> java.time.Instant.ofEpochMilli(timestamp).atZone(java.time.ZoneId.systemDefault()).toLocalDate() } }.filter { it in monday..today && it.dayOfWeek.value <= 5 }.distinct().size
+    val selectedName = catalog.firstOrNull { it.id == selectedExerciseId }?.name ?: "Selecione um exercício"
     Scaffold(containerColor = AppBackground) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp, vertical = 12.dp)) {
             Header("Histórico", "Frequência e evolução", onBack)
             Card(colors = CardDefaults.cardColors(containerColor = SoftGreen), shape = RoundedCornerShape(18.dp)) {
                 Column(Modifier.padding(16.dp)) {
                     Text("Frequência nos dias programados", color = Green, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    Text("${completedSessions.coerceAtMost(5)} de 5 dias", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("$scheduledDays de 5 dias", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                     Text("Segunda a sexta · fins de semana não quebram a sequência", color = Color(0xFF527468), style = MaterialTheme.typography.bodySmall)
                 }
             }
             Spacer(Modifier.height(18.dp))
             Text("Evolução por exercício", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                catalog.filter { it.id != "walk" }.forEach { exercise ->
+                    TextButton(onClick = { selectedExerciseId = exercise.id }) {
+                        Text(exercise.name, color = if (exercise.id == selectedExerciseId) Green else Color(0xFF60786D), fontWeight = if (exercise.id == selectedExerciseId) FontWeight.Bold else FontWeight.Normal)
+                    }
+                }
+            }
             Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Puxada supinada", fontWeight = FontWeight.Bold)
+                    Text(selectedName, fontWeight = FontWeight.Bold)
                     Text("Carga utilizada por sessão", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(14.dp))
                     val values = loadHistory.mapNotNull { it.loadKg }.takeLast(8)
@@ -587,9 +605,9 @@ private fun HistoryScreen(onBack: () -> Unit, completedSessions: Int, loadHistor
                 }
             }
             Spacer(Modifier.height(14.dp))
-            HistoryMetric("Treinos concluídos", "18")
-            HistoryMetric("Maior sequência", "3 semanas")
-            HistoryMetric("Exercícios com evolução", "8 de 13")
+            HistoryMetric("Treinos concluídos", completedSessions.toString())
+            HistoryMetric("Dias programados nesta semana", "$scheduledDays de 5")
+            HistoryMetric("Exercício selecionado", selectedName)
         }
     }
 }
