@@ -39,6 +39,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Settings
@@ -172,22 +173,61 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
     val selectedWorkoutId: StateFlow<String?> = _selectedWorkoutId
     private val _activeSessionId = MutableStateFlow<String?>(null)
     val activeSessionId: StateFlow<String?> = _activeSessionId
+    private val _activeWorkoutId = MutableStateFlow<String?>(null)
+    val activeWorkoutId: StateFlow<String?> = _activeWorkoutId
+    private val _sessionRestoreReady = MutableStateFlow(false)
+    val sessionRestoreReady: StateFlow<Boolean> = _sessionRestoreReady
 
-    init { viewModelScope.launch { database.dao().seedIfEmpty(); database.dao().ensureCatalog() } }
+    init {
+        viewModelScope.launch {
+            val dao = database.dao()
+            dao.seedIfEmpty()
+            dao.ensureCatalog()
+            val savedId = dao.allSettings().firstOrNull { it.key == "active_session_id" }?.value
+            val savedSession = savedId?.let { dao.session(it) }
+            if (savedSession != null && !savedSession.completed) {
+                _activeSessionId.value = savedSession.id
+                _activeWorkoutId.value = savedSession.workoutId
+                _selectedWorkoutId.value = savedSession.workoutId
+            } else if (savedId != null) {
+                dao.deleteSetting("active_session_id")
+            }
+            _sessionRestoreReady.value = true
+        }
+    }
 
     fun selectWorkout(id: String) { _selectedWorkoutId.value = id }
 
     fun startSession(workoutId: String, periodId: String?) {
+        if (_activeSessionId.value != null) return
         val id = UUID.randomUUID().toString()
         _activeSessionId.value = id
-        viewModelScope.launch { database.dao().insertSession(com.lamy.gymapp.data.WorkoutSessionEntity(id, workoutId, System.currentTimeMillis(), periodId = periodId)) }
+        _activeWorkoutId.value = workoutId
+        viewModelScope.launch {
+            database.withTransaction {
+                database.dao().insertSession(com.lamy.gymapp.data.WorkoutSessionEntity(id, workoutId, System.currentTimeMillis(), periodId = periodId))
+                database.dao().saveSetting(com.lamy.gymapp.data.AppSettingEntity("active_session_id", id))
+            }
+        }
     }
 
     fun finishSession() {
         _activeSessionId.value?.let { id ->
-            _activeSessionId.value = null
-            viewModelScope.launch { database.dao().finishSession(id, System.currentTimeMillis()) }
+            viewModelScope.launch {
+                database.withTransaction {
+                    database.dao().finishSession(id, System.currentTimeMillis())
+                    database.dao().deleteSetting("active_session_id")
+                }
+                _activeSessionId.value = null
+                _activeWorkoutId.value = null
+            }
         }
+    }
+
+    fun sessionSets(sessionId: String) = database.dao().observeSessionSets(sessionId)
+
+    fun updateExerciseAnnotation(workoutId: String, exerciseId: String, annotation: String) {
+        viewModelScope.launch { database.dao().updateExerciseAnnotation(workoutId, exerciseId, annotation) }
     }
 
     fun saveSessionSet(sessionId: String, exerciseId: String, setIndex: Int, loadKg: Double?, completed: Boolean, increaseMarked: Boolean) {
@@ -298,8 +338,8 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
             val exercises = dao.allExercises(); val workouts = dao.allWorkouts(); val links = dao.allWorkoutExercises(); val profiles = dao.allLoadProfiles(); val sessions = dao.allSessions(); val sessionSets = dao.allSessionSets(); val settings = dao.allSettings(); val periods = dao.allPeriods(); val periodLinks = dao.allPeriodLinks()
             root.put("exercises", array { exercises.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("muscleGroup", it.muscleGroup)) } })
             root.put("workouts", array { workouts.forEach { put(JSONObject().put("id", it.id).put("title", it.title).put("subtitle", it.subtitle).put("sortOrder", it.sortOrder)) } })
-            root.put("workoutExercises", array { links.forEach { put(JSONObject().put("workoutId", it.workoutId).put("exerciseId", it.exerciseId).put("sortOrder", it.sortOrder).put("restSeconds", it.restSeconds).put("plannedReps", it.plannedReps).put("setCount", it.setCount).put("plannedLoadsCsv", it.plannedLoadsCsv)) } })
-            root.put("loadProfiles", array { profiles.forEach { put(JSONObject().put("exerciseId", it.exerciseId).put("setIndex", it.setIndex).put("lastUsedLoadKg", it.lastUsedLoadKg)) } })
+            root.put("workoutExercises", array { links.forEach { put(JSONObject().put("workoutId", it.workoutId).put("exerciseId", it.exerciseId).put("sortOrder", it.sortOrder).put("restSeconds", it.restSeconds).put("plannedReps", it.plannedReps).put("setCount", it.setCount).put("plannedLoadsCsv", it.plannedLoadsCsv).put("annotation", it.annotation)) } })
+            root.put("loadProfiles", array { profiles.forEach { put(JSONObject().put("exerciseId", it.exerciseId).put("setIndex", it.setIndex).put("lastUsedLoadKg", it.lastUsedLoadKg).put("userRecorded", it.userRecorded)) } })
             root.put("sessions", array { sessions.forEach { put(JSONObject().put("id", it.id).put("workoutId", it.workoutId).put("startedAt", it.startedAt).put("finishedAt", it.finishedAt ?: JSONObject.NULL).put("completed", it.completed).put("periodId", it.periodId ?: JSONObject.NULL)) } })
             root.put("sessionSets", array { sessionSets.forEach { put(JSONObject().put("id", it.id).put("sessionId", it.sessionId).put("exerciseId", it.exerciseId).put("setIndex", it.setIndex).put("reps", it.reps ?: JSONObject.NULL).put("loadKg", it.loadKg ?: JSONObject.NULL).put("completed", it.completed).put("increaseMarked", it.increaseMarked)) } })
             root.put("settings", array { settings.forEach { put(JSONObject().put("key", it.key).put("value", it.value)) } })
@@ -319,8 +359,8 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
                 val dao = database.dao()
                 val exercises = (0 until root.getJSONArray("exercises").length()).map { val o = root.getJSONArray("exercises").getJSONObject(it); com.lamy.gymapp.data.ExerciseEntity(o.getString("id"), o.getString("name"), o.getString("muscleGroup")) }
                 val workouts = (0 until root.getJSONArray("workouts").length()).map { val o = root.getJSONArray("workouts").getJSONObject(it); WorkoutEntity(o.getString("id"), o.getString("title"), o.getString("subtitle"), o.getInt("sortOrder")) }
-                val links = (0 until root.getJSONArray("workoutExercises").length()).map { val o = root.getJSONArray("workoutExercises").getJSONObject(it); com.lamy.gymapp.data.WorkoutExerciseEntity(o.getString("workoutId"), o.getString("exerciseId"), o.getInt("sortOrder"), o.getInt("restSeconds"), o.getString("plannedReps"), o.optInt("setCount", 3), o.optString("plannedLoadsCsv", "")) }
-                val profiles = (0 until root.getJSONArray("loadProfiles").length()).map { val o = root.getJSONArray("loadProfiles").getJSONObject(it); com.lamy.gymapp.data.ExerciseLoadProfileEntity(o.getString("exerciseId"), o.getInt("setIndex"), o.getDouble("lastUsedLoadKg")) }
+                val links = (0 until root.getJSONArray("workoutExercises").length()).map { val o = root.getJSONArray("workoutExercises").getJSONObject(it); com.lamy.gymapp.data.WorkoutExerciseEntity(o.getString("workoutId"), o.getString("exerciseId"), o.getInt("sortOrder"), o.getInt("restSeconds"), o.getString("plannedReps"), o.optInt("setCount", 3), o.optString("plannedLoadsCsv", ""), o.optString("annotation", "")) }
+                val profiles = (0 until root.getJSONArray("loadProfiles").length()).map { val o = root.getJSONArray("loadProfiles").getJSONObject(it); com.lamy.gymapp.data.ExerciseLoadProfileEntity(o.getString("exerciseId"), o.getInt("setIndex"), o.getDouble("lastUsedLoadKg"), o.optBoolean("userRecorded", false)) }
                 val sessions = (0 until root.getJSONArray("sessions").length()).map { val o = root.getJSONArray("sessions").getJSONObject(it); com.lamy.gymapp.data.WorkoutSessionEntity(o.getString("id"), o.getString("workoutId"), o.getLong("startedAt"), if (o.isNull("finishedAt")) null else o.getLong("finishedAt"), o.getBoolean("completed"), if (o.isNull("periodId")) null else o.optString("periodId").takeIf(String::isNotBlank)) }
                 val sessionSets = (0 until root.getJSONArray("sessionSets").length()).map { val o = root.getJSONArray("sessionSets").getJSONObject(it); com.lamy.gymapp.data.SessionSetEntity(o.getString("id"), o.getString("sessionId"), o.getString("exerciseId"), o.getInt("setIndex"), if (o.isNull("reps")) null else o.getInt("reps"), if (o.isNull("loadKg")) null else o.getDouble("loadKg"), o.getBoolean("completed"), o.getBoolean("increaseMarked")) }
                 val settings = (0 until root.getJSONArray("settings").length()).map { val o = root.getJSONArray("settings").getJSONObject(it); com.lamy.gymapp.data.AppSettingEntity(o.getString("key"), o.getString("value")) }
@@ -339,7 +379,7 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
     fun saveLoad(exerciseId: String, setIndex: Int, value: Double) {
         viewModelScope.launch {
             database.dao().saveLoadProfile(
-                listOf(com.lamy.gymapp.data.ExerciseLoadProfileEntity(exerciseId, setIndex, value))
+                listOf(com.lamy.gymapp.data.ExerciseLoadProfileEntity(exerciseId, setIndex, value, userRecorded = true))
             )
         }
     }
@@ -362,12 +402,22 @@ fun GymApp(viewModel: GymViewModel) {
     val periods = viewModel.periods.collectAsStateWithLifecycle(initialValue = emptyList()).value
     val periodWorkouts = viewModel.activePeriodWorkouts.collectAsStateWithLifecycle(initialValue = emptyList()).value
     val selectedId by viewModel.selectedWorkoutId.collectAsStateWithLifecycle()
-    var screen by remember { mutableStateOf("home") }
+    val activeSessionId by viewModel.activeSessionId.collectAsStateWithLifecycle()
+    val activeWorkoutId by viewModel.activeWorkoutId.collectAsStateWithLifecycle()
+    val sessionRestoreReady by viewModel.sessionRestoreReady.collectAsStateWithLifecycle()
+    var screen by rememberSaveable { mutableStateOf("home") }
+
+    LaunchedEffect(sessionRestoreReady, activeSessionId, activeWorkoutId) {
+        if (sessionRestoreReady && activeSessionId != null && activeWorkoutId != null && screen == "home") {
+            viewModel.selectWorkout(activeWorkoutId!!)
+            screen = "workout"
+        }
+    }
 
     BackHandler(enabled = screen != "home") {
         when (screen) {
             "edit" -> screen = "workouts"
-            "workout" -> { viewModel.finishSession(); screen = "home" }
+            "workout" -> screen = "home"
             else -> screen = "home"
         }
     }
@@ -375,20 +425,16 @@ fun GymApp(viewModel: GymViewModel) {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
             if (screen == "workout" && selectedId != null) {
-                val sessionId = viewModel.activeSessionId.collectAsStateWithLifecycle().value
-                val leaveWorkout = {
-                    viewModel.finishSession()
-                    screen = "home"
-                }
+                val workoutSessionId = activeSessionId.takeIf { activeWorkoutId == selectedId }
                 WorkoutScreen(
                     viewModel = viewModel,
                     workoutId = selectedId!!,
-                    sessionId = sessionId,
+                    sessionId = workoutSessionId,
                     workout = workouts.firstOrNull { it.id == selectedId },
                     exercises = viewModel.exercises(selectedId!!).collectAsStateWithLifecycle(initialValue = emptyList()).value,
-                    onBack = leaveWorkout,
+                    onBack = { screen = "home" },
                     onStartSession = { viewModel.startSession(selectedId!!, activePeriod?.id) },
-                    onFinishSession = leaveWorkout
+                    onFinishSession = { viewModel.finishSession(); screen = "home" }
                 )
             } else if (screen == "settings") {
                 SettingsScreen(viewModel = viewModel, onBack = { screen = "home" }, onEditWorkouts = { screen = "workouts" })
@@ -398,7 +444,7 @@ fun GymApp(viewModel: GymViewModel) {
                     activePeriod = activePeriod,
                     periods = periods,
                     onBack = { screen = "home" },
-                    onOpenWorkout = { id -> viewModel.finishSession(); viewModel.selectWorkout(id); screen = "workout" },
+                    onOpenWorkout = { id -> viewModel.selectWorkout(activeWorkoutId ?: id); screen = "workout" },
                     onEditWorkout = { id -> viewModel.selectWorkout(id); screen = "edit" },
                     onRemoveWorkout = { id -> viewModel.removeWorkoutFromPeriod(id, activePeriod?.id) },
                     onCreateWorkout = { title, subtitle -> viewModel.createWorkout(title, subtitle, activePeriod?.id) },
@@ -420,7 +466,7 @@ fun GymApp(viewModel: GymViewModel) {
                 HomeScreen(
                     workouts = periodWorkouts,
                     periodTitle = activePeriod?.title ?: "Programa inicial",
-                    onOpenWorkout = { id -> viewModel.finishSession(); viewModel.selectWorkout(id); screen = "workout" },
+                    onOpenWorkout = { id -> viewModel.selectWorkout(activeWorkoutId ?: id); screen = "workout" },
                     onSettings = { screen = "settings" },
                     onWorkouts = { screen = "workouts" },
                     onHistory = { screen = "history" }
@@ -619,7 +665,7 @@ private fun WorkoutsScreen(
                 TextButton(onClick = { showPeriods = true }, modifier = Modifier.weight(1f)) { Text("Trocar / ver períodos", color = Green) }
                 TextButton(onClick = { newPeriodTitle = ""; copyWorkouts = true; showNewPeriod = true }, modifier = Modifier.weight(1f)) { Text("+ Novo período", color = Green) }
             }
-            Button(onClick = { showNewWorkout = true }, modifier = Modifier.fillMaxWidth()) { Text("+ Adicionar treino novo") }
+            Button(onClick = { showNewWorkout = true }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Color.White)) { Text("+ Adicionar treino novo") }
             Text("${workouts.size} treinos neste período", color = Color(0xFF60786D), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp, bottom = 2.dp))
             Spacer(Modifier.height(8.dp))
             androidx.compose.foundation.lazy.LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -739,9 +785,9 @@ private fun EditWorkoutScreen(
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
                                 OutlinedTextField(
                                     value = repsText,
-                                    onValueChange = { repsText = it.take(18) },
-                                    label = { Text("Repetições") },
-                                    placeholder = { Text("10–12") },
+                                    onValueChange = { repsText = it.take(80) },
+                                    label = { Text("Reps por série (|)") },
+                                    placeholder = { Text("10–12|6–8") },
                                     singleLine = true,
                                     modifier = Modifier.weight(1.35f)
                                 )
@@ -961,6 +1007,7 @@ private fun WorkoutScreen(
     onFinishSession: () -> Unit
 ) {
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
+    val savedSessionSets = if (sessionId != null) viewModel.sessionSets(sessionId).collectAsStateWithLifecycle(initialValue = emptyList()).value else emptyList()
     LaunchedEffect(exercises) { exercises.forEach { expanded[it.exerciseId] = true } }
     Scaffold(containerColor = AppBackground) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
@@ -985,11 +1032,21 @@ private fun WorkoutScreen(
                 items(exercises.size) { index ->
                     val item = exercises[index]
                     val loadProfile = viewModel.loadProfile(item.exerciseId)
-                        .collectAsStateWithLifecycle(initialValue = emptyList()).value
-                    ExerciseCard(item, loadProfile, expanded[item.exerciseId] == true, onLoadChanged = { setIndex, value ->
+                        .collectAsStateWithLifecycle(initialValue = emptyList()).value.filter { it.userRecorded }
+                    val exerciseSessionSets = savedSessionSets.filter { it.exerciseId == item.exerciseId }
+                    ExerciseCard(item, loadProfile, exerciseSessionSets, expanded[item.exerciseId] == true, onLoadChanged = { setIndex, value ->
                         viewModel.saveLoad(item.exerciseId, setIndex, value)
                     }, onSetChanged = { setIndex, loadKg, completed, increaseMarked ->
                         sessionId?.let { viewModel.saveSessionSet(it, item.exerciseId, setIndex, loadKg, completed, increaseMarked) }
+                    }, onAnnotationChanged = { note -> viewModel.updateExerciseAnnotation(workoutId, item.exerciseId, note) }, onCheckAll = {
+                        sessionId?.let { activeId ->
+                            repeat(item.setCount) { setNumber ->
+                                val saved = exerciseSessionSets.firstOrNull { it.setIndex == setNumber + 1 }
+                                val userLoad = loadProfile.firstOrNull { it.setIndex == setNumber + 1 }?.lastUsedLoadKg
+                                val plannedLoad = item.plannedLoadsCsv.split(",").getOrNull(setNumber)?.trim()?.toDoubleOrNull()
+                                viewModel.saveSessionSet(activeId, item.exerciseId, setNumber + 1, saved?.loadKg ?: userLoad ?: plannedLoad, true, saved?.increaseMarked ?: false)
+                            }
+                        }
                     }) {
                         expanded[item.exerciseId] = !(expanded[item.exerciseId] ?: true)
                     }
@@ -1003,11 +1060,15 @@ private fun WorkoutScreen(
 private fun ExerciseCard(
     item: WorkoutExerciseRow,
     loadProfile: List<com.lamy.gymapp.data.ExerciseLoadProfileEntity>,
+    sessionSets: List<com.lamy.gymapp.data.SessionSetEntity>,
     isExpanded: Boolean,
     onLoadChanged: (Int, Double) -> Unit,
     onSetChanged: (Int, Double?, Boolean, Boolean) -> Unit,
+    onAnnotationChanged: (String) -> Unit,
+    onCheckAll: () -> Unit,
     onToggle: () -> Unit
 ) {
+    var annotation by remember(item.exerciseId) { mutableStateOf(item.annotation) }
     var restRemaining by remember(item.exerciseId) { mutableIntStateOf(0) }
     LaunchedEffect(restRemaining) {
         if (restRemaining > 0) {
@@ -1021,10 +1082,11 @@ private fun ExerciseCard(
         border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD5E0D5))
     ) {
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().background(Color(0xFFE4EEE4)).clickable(onClick = onToggle).padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().background(Color(0xFFCADCCB)).clickable(onClick = onToggle).padding(horizontal = 14.dp, vertical = 12.dp)) {
                 Column(Modifier.weight(1f)) {
                     Text(item.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color(0xFF263A2B))
                     Text("${item.muscleGroup} · descanso ${item.restSeconds}s", color = Color(0xFF657568), style = MaterialTheme.typography.labelSmall)
+                    if (item.annotation.isNotBlank()) Text(item.annotation, color = Color(0xFF385942), style = MaterialTheme.typography.bodySmall, maxLines = 2)
                 }
                 TextButton(
                     onClick = { if (item.restSeconds > 0) restRemaining = item.restSeconds },
@@ -1036,23 +1098,42 @@ private fun ExerciseCard(
                         style = MaterialTheme.typography.labelSmall
                     )
                 }
+                if (isExpanded && item.setCount > 1) {
+                    IconButton(onClick = onCheckAll) {
+                        Icon(Icons.Default.DoneAll, contentDescription = "Marcar todas as séries", tint = Green)
+                    }
+                }
                 Icon(if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = "Abrir ou fechar", tint = Green)
             }
             if (isExpanded) {
                 repeat(item.setCount) { setIndex ->
+                    val saved = sessionSets.firstOrNull { it.setIndex == setIndex + 1 }
                     val preset = loadProfile.firstOrNull { it.setIndex == setIndex + 1 }?.lastUsedLoadKg
                     val planned = item.plannedLoadsCsv.split(",").getOrNull(setIndex)?.trim()?.toDoubleOrNull()
-                    val effectivePreset = preset ?: planned
+                    val effectivePreset = saved?.loadKg ?: preset ?: planned
                     SetRow(
                         number = setIndex + 1,
-                        reps = item.plannedReps,
+                        reps = item.plannedReps.split('|').getOrNull(setIndex)?.trim()?.takeIf(String::isNotBlank)
+                            ?: item.plannedReps.split('|').last().trim(),
                         load = effectivePreset?.let { if (it % 1.0 == 0.0) "${it.toInt()} kg" else "$it kg" }.orEmpty(),
-                        completed = false,
+                        completed = saved?.completed == true,
+                        increaseMarked = saved?.increaseMarked == true,
                         onLoadChanged = { value -> value.toDoubleOrNull()?.let { onLoadChanged(setIndex + 1, it) } },
                         rowColor = if (setIndex % 2 == 0) Color(0xFFFBFCFA) else Color(0xFFEDF3EB),
                         onSetChanged = { loadKg, completed, increaseMarked -> onSetChanged(setIndex + 1, loadKg, completed, increaseMarked) }
                     )
                 }
+                OutlinedTextField(
+                    value = annotation,
+                    onValueChange = { annotation = it; onAnnotationChanged(it) },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                    label = { Text("Anotação deste exercício") },
+                    placeholder = { Text("Ex.: ajustar posição dos pés") },
+                    minLines = 2,
+                    maxLines = 4,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Green, unfocusedBorderColor = Color(0xFFB9C9BA))
+                )
             }
         }
     }
@@ -1064,13 +1145,14 @@ private fun SetRow(
     reps: String,
     load: String,
     completed: Boolean,
+    increaseMarked: Boolean,
     onLoadChanged: (String) -> Unit,
     rowColor: Color,
     onSetChanged: (Double?, Boolean, Boolean) -> Unit
 ) {
     var enteredLoad by remember(load) { mutableStateOf(load) }
     var isCompleted by remember { mutableStateOf(completed) }
-    var increaseMarked by remember { mutableStateOf(false) }
+    var increaseMarked by remember(increaseMarked) { mutableStateOf(increaseMarked) }
     fun persist() = onSetChanged(enteredLoad.removeSuffix(" kg").trim().toDoubleOrNull(), isCompleted, increaseMarked)
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().background(rowColor).padding(horizontal = 10.dp, vertical = 8.dp)) {
         Surface(modifier = Modifier.width(28.dp).height(28.dp), color = SoftGreen, shape = RoundedCornerShape(9.dp)) {

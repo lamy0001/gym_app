@@ -10,7 +10,7 @@ class WorkoutPeriodCopyTest {
     @Test
     fun copiesWorkoutAndExerciseSetupToIndependentIds() {
         val workout = WorkoutEntity("old-workout", "Upper", "Peito · Costas", 8)
-        val exercise = WorkoutExerciseEntity("old-workout", "supinated-pulldown", 3, 90, "10–12", 4, "20,22.5,22.5,25")
+        val exercise = WorkoutExerciseEntity("old-workout", "supinated-pulldown", 3, 90, "10–12", 4, "20,22.5,22.5,25", "Cotovelos para baixo")
         val copies = duplicateWorkoutTemplates(listOf(workout to listOf(exercise))) { "new-workout" }
 
         assertEquals(1, copies.size)
@@ -24,6 +24,7 @@ class WorkoutPeriodCopyTest {
         assertEquals(exercise.plannedReps, copies.single().exercises.single().plannedReps)
         assertEquals(exercise.setCount, copies.single().exercises.single().setCount)
         assertEquals(exercise.plannedLoadsCsv, copies.single().exercises.single().plannedLoadsCsv)
+        assertEquals(exercise.annotation, copies.single().exercises.single().annotation)
     }
 
     @Test
@@ -88,5 +89,22 @@ class WorkoutPeriodCopyTest {
         )
 
         assertEquals(listOf(25.0, 30.0), peakLoadsBySession(sets))
+    }
+
+    @Test
+    fun builtInWorkoutsMatchTheFiveOriginalWorkoutScreenshots() {
+        val defaults = defaultWorkoutExercises()
+
+        assertEquals(13, defaults.getValue("Upper").size)
+        assertEquals(12, defaults.getValue("Lower").size)
+        assertEquals(1, defaults.getValue("Cardio").size)
+        assertEquals(11, defaults.getValue("Upper 2").size)
+        assertEquals(12, defaults.getValue("Lower 2").size)
+        assertEquals("6,7,7", defaults.getValue("Upper").first { it.exerciseId == "supinated-pulldown" }.plannedLoadsCsv)
+        assertEquals("8,6,7", defaults.getValue("Upper 2").first { it.exerciseId == "supinated-pulldown" }.plannedLoadsCsv)
+        assertEquals("6 km · 60 min · 6 km/h · 10 min/km", defaults.getValue("Cardio").single().plannedReps)
+        assertEquals("10–12|10–12|Cluster set", defaults.getValue("Lower 2").first { it.exerciseId == "hip-thrust" }.plannedReps)
+        val catalogIds = defaultExerciseCatalog().map { it.id }.toSet()
+        assertEquals(emptySet<String>(), defaults.values.flatten().map { it.exerciseId }.toSet() - catalogIds)
     }
 }

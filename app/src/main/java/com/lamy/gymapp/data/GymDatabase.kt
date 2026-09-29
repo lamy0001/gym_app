@@ -12,10 +12,10 @@ data class ExerciseEntity(@PrimaryKey val id: String, val name: String, val musc
 data class WorkoutEntity(@PrimaryKey val id: String, val title: String, val subtitle: String, val sortOrder: Int)
 
 @Entity(tableName = "workout_exercises", primaryKeys = ["workoutId", "exerciseId"])
-data class WorkoutExerciseEntity(val workoutId: String, val exerciseId: String, val sortOrder: Int, val restSeconds: Int, val plannedReps: String, val setCount: Int = 3, val plannedLoadsCsv: String = "")
+data class WorkoutExerciseEntity(val workoutId: String, val exerciseId: String, val sortOrder: Int, val restSeconds: Int, val plannedReps: String, val setCount: Int = 3, val plannedLoadsCsv: String = "", val annotation: String = "")
 
 @Entity(tableName = "exercise_load_profiles", primaryKeys = ["exerciseId", "setIndex"])
-data class ExerciseLoadProfileEntity(val exerciseId: String, val setIndex: Int, val lastUsedLoadKg: Double)
+data class ExerciseLoadProfileEntity(val exerciseId: String, val setIndex: Int, val lastUsedLoadKg: Double, val userRecorded: Boolean = false)
 
 @Entity(tableName = "workout_sessions")
 data class WorkoutSessionEntity(@PrimaryKey val id: String, val workoutId: String, val startedAt: Long, val finishedAt: Long? = null, val completed: Boolean = false, val periodId: String? = null)
@@ -32,7 +32,7 @@ data class TrainingPeriodEntity(@PrimaryKey val id: String, val title: String, v
 @Entity(tableName = "workout_period_links", primaryKeys = ["workoutId", "periodId"])
 data class WorkoutPeriodLinkEntity(val workoutId: String, val periodId: String)
 
-data class WorkoutExerciseRow(val exerciseId: String, val name: String, val muscleGroup: String, val restSeconds: Int, val plannedReps: String, val setCount: Int, val plannedLoadsCsv: String)
+data class WorkoutExerciseRow(val exerciseId: String, val name: String, val muscleGroup: String, val restSeconds: Int, val plannedReps: String, val setCount: Int, val plannedLoadsCsv: String, val annotation: String)
 
 @Dao
 interface GymDao {
@@ -42,19 +42,23 @@ interface GymDao {
     @Query("SELECT COUNT(*) FROM workouts") suspend fun workoutCount(): Int
     @Query("SELECT * FROM workout_exercises we INNER JOIN exercises e ON e.id = we.exerciseId WHERE we.workoutId = :workoutId ORDER BY we.sortOrder") fun observeWorkoutExercises(workoutId: String): Flow<List<WorkoutExerciseRow>>
     @Query("SELECT * FROM exercise_load_profiles WHERE exerciseId = :exerciseId ORDER BY setIndex") fun observeLoadProfile(exerciseId: String): Flow<List<ExerciseLoadProfileEntity>>
-    @Query("SELECT COUNT(*) FROM workout_sessions WHERE completed = 1") fun observeCompletedSessionCount(): Flow<Int>
+    @Query("SELECT COUNT(*) FROM workout_sessions ws WHERE ws.completed = 1 AND ws.finishedAt IS NOT NULL AND EXISTS (SELECT 1 FROM session_sets ss WHERE ss.sessionId = ws.id AND ss.completed = 1)") fun observeCompletedSessionCount(): Flow<Int>
     @Query("SELECT * FROM workout_sessions ws WHERE ws.completed = 1 AND ws.finishedAt IS NOT NULL AND EXISTS (SELECT 1 FROM session_sets ss WHERE ss.sessionId = ws.id AND ss.completed = 1) ORDER BY ws.finishedAt") fun observeCompletedSessions(): Flow<List<WorkoutSessionEntity>>
+    @Query("SELECT * FROM workout_sessions WHERE id = :sessionId LIMIT 1") suspend fun session(sessionId: String): WorkoutSessionEntity?
+    @Query("SELECT * FROM session_sets WHERE sessionId = :sessionId") fun observeSessionSets(sessionId: String): Flow<List<SessionSetEntity>>
     @Query("SELECT ss.* FROM session_sets ss INNER JOIN workout_sessions ws ON ws.id = ss.sessionId WHERE ws.completed = 1 AND ss.exerciseId = :exerciseId AND ss.completed = 1 AND ss.loadKg IS NOT NULL AND (:periodId IS NULL OR ws.periodId = :periodId) ORDER BY ws.finishedAt, ss.setIndex") fun observeExerciseHistory(exerciseId: String, periodId: String?): Flow<List<SessionSetEntity>>
     @Query("SELECT * FROM app_settings") fun observeSettings(): Flow<List<AppSettingEntity>>
     @Query("SELECT * FROM training_periods WHERE active = 1 ORDER BY startedAt DESC LIMIT 1") fun observeActivePeriod(): Flow<TrainingPeriodEntity?>
     @Query("SELECT * FROM training_periods ORDER BY startedAt DESC") fun observePeriods(): Flow<List<TrainingPeriodEntity>>
     @Query("SELECT * FROM exercises") suspend fun allExercises(): List<ExerciseEntity>
+    @Query("UPDATE exercises SET name = :name WHERE id = :exerciseId") suspend fun updateExerciseName(exerciseId: String, name: String)
     @Query("SELECT * FROM workouts") suspend fun allWorkouts(): List<WorkoutEntity>
     @Query("SELECT * FROM workout_exercises") suspend fun allWorkoutExercises(): List<WorkoutExerciseEntity>
     @Query("SELECT * FROM exercise_load_profiles") suspend fun allLoadProfiles(): List<ExerciseLoadProfileEntity>
     @Query("SELECT * FROM workout_sessions") suspend fun allSessions(): List<WorkoutSessionEntity>
     @Query("SELECT * FROM session_sets") suspend fun allSessionSets(): List<SessionSetEntity>
     @Query("SELECT * FROM app_settings") suspend fun allSettings(): List<AppSettingEntity>
+    @Query("DELETE FROM app_settings WHERE `key` = :key") suspend fun deleteSetting(key: String)
     @Query("SELECT * FROM training_periods") suspend fun allPeriods(): List<TrainingPeriodEntity>
     @Query("SELECT * FROM workout_period_links") suspend fun allPeriodLinks(): List<WorkoutPeriodLinkEntity>
     @Query("SELECT * FROM workout_exercises WHERE workoutId = :workoutId ORDER BY sortOrder") suspend fun workoutExercises(workoutId: String): List<WorkoutExerciseEntity>
@@ -80,15 +84,16 @@ interface GymDao {
     @Query("DELETE FROM workouts WHERE id = :workoutId") suspend fun deleteWorkout(workoutId: String)
     @Query("UPDATE workout_exercises SET restSeconds = :restSeconds, setCount = :setCount WHERE workoutId = :workoutId AND exerciseId = :exerciseId") suspend fun updateWorkoutExercise(workoutId: String, exerciseId: String, restSeconds: Int, setCount: Int)
     @Query("UPDATE workout_exercises SET restSeconds = :restSeconds, setCount = :setCount, plannedReps = :plannedReps WHERE workoutId = :workoutId AND exerciseId = :exerciseId") suspend fun updateWorkoutExerciseDetails(workoutId: String, exerciseId: String, restSeconds: Int, setCount: Int, plannedReps: String)
+    @Query("UPDATE workout_exercises SET annotation = :annotation WHERE workoutId = :workoutId AND exerciseId = :exerciseId") suspend fun updateExerciseAnnotation(workoutId: String, exerciseId: String, annotation: String)
     @Query("UPDATE workout_exercises SET plannedLoadsCsv = :loads WHERE workoutId = :workoutId AND exerciseId = :exerciseId") suspend fun updatePlannedLoads(workoutId: String, exerciseId: String, loads: String)
     @Query("UPDATE workout_sessions SET finishedAt = :finishedAt, completed = 1 WHERE id = :sessionId") suspend fun finishSession(sessionId: String, finishedAt: Long)
 }
 
-@Database(entities = [ExerciseEntity::class, WorkoutEntity::class, WorkoutExerciseEntity::class, ExerciseLoadProfileEntity::class, WorkoutSessionEntity::class, SessionSetEntity::class, AppSettingEntity::class, TrainingPeriodEntity::class, WorkoutPeriodLinkEntity::class], version = 4, exportSchema = false)
+@Database(entities = [ExerciseEntity::class, WorkoutEntity::class, WorkoutExerciseEntity::class, ExerciseLoadProfileEntity::class, WorkoutSessionEntity::class, SessionSetEntity::class, AppSettingEntity::class, TrainingPeriodEntity::class, WorkoutPeriodLinkEntity::class], version = 5, exportSchema = false)
 abstract class GymDatabase : RoomDatabase() {
     abstract fun dao(): GymDao
     companion object {
-        fun create(context: Context): GymDatabase = Room.databaseBuilder(context, GymDatabase::class.java, "gym_app.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+        fun create(context: Context): GymDatabase = Room.databaseBuilder(context, GymDatabase::class.java, "gym_app.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
     }
 }
 
@@ -108,6 +113,13 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
         db.execSQL("INSERT OR IGNORE INTO workout_period_links (workoutId, periodId) SELECT id, COALESCE((SELECT value FROM app_settings WHERE \"key\" = 'period_id'), 'period-inicial') FROM workouts")
         db.execSQL("INSERT OR IGNORE INTO app_settings (\"key\", value) VALUES ('period_id', 'period-inicial')")
         db.execSQL("INSERT OR IGNORE INTO app_settings (\"key\", value) VALUES ('period_title', 'Programa inicial')")
+    }
+}
+
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE workout_exercises ADD COLUMN annotation TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE exercise_load_profiles ADD COLUMN userRecorded INTEGER NOT NULL DEFAULT 0")
     }
 }
 
@@ -145,20 +157,7 @@ suspend fun GymDao.ensureCatalog() {
         saveSetting(AppSettingEntity("period_title", period.title))
         allWorkouts().forEach { insertPeriodLink(WorkoutPeriodLinkEntity(it.id, period.id)) }
     }
-    insertExercisesIfMissing(listOf(
-        ExerciseEntity("scapula-cadence", "Aula posicionamento das escápulas e cadência", "Preparação"),
-        ExerciseEntity("foot-spacing", "Aula afastamento dos pés", "Preparação"),
-        ExerciseEntity("foot-support", "Aula apoio dos pés", "Preparação"),
-        ExerciseEntity("arch-class", "Aula arco plantar", "Preparação"),
-        ExerciseEntity("bracing", "Manobra do bracing", "Preparação"),
-        ExerciseEntity("triceps-french", "Tríceps francês banco inclinado 30°", "Tríceps"),
-        ExerciseEntity("triceps-forehead", "Tríceps testa halteres", "Tríceps"),
-        ExerciseEntity("close-grip-dumbbell", "Supino fechado halteres", "Peito"),
-        ExerciseEntity("machine-bench", "Supino reto máquina", "Peito"),
-        ExerciseEntity("standing-calf", "Panturrilha em pé", "Panturrilha"),
-        ExerciseEntity("scott-curl", "Rosca Scott máquina", "Bíceps"),
-        ExerciseEntity("dumbbell-curl", "Rosca halteres", "Bíceps")
-    ))
+    insertExercisesIfMissing(defaultExerciseCatalog())
     insertWorkoutExercisesIfMissing(listOf(
         WorkoutExerciseEntity("upper-1", "scapula-cadence", 11, 45, "10–12", 2),
         WorkoutExerciseEntity("upper-1", "triceps-french", 12, 75, "10–12", 3),
@@ -215,4 +214,112 @@ suspend fun GymDao.ensureCatalog() {
         "lower-2:hip-thrust" to "55,55,55", "lower-2:hack-squat" to "20,20,22.5", "lower-2:leg-extension" to "13,14,14", "lower-2:leg-curl" to "15,15,17.5", "lower-2:standing-calf" to "15,15,15", "lower-2:scott-curl" to "12,12,12"
     )
     plannedByWorkout.forEach { (key, loads) -> val parts = key.split(":"); updatePlannedLoads(parts[0], parts[1], loads) }
+    if (allSettings().firstOrNull { it.key == "default_workout_revision" }?.value != "3") {
+        updateExerciseName("machine-shoulder-press", "Desenvolvimento máquina pegada pronada")
+        updateExerciseName("machine-bench", "Supino reto na máquina inclinada")
+        updateExerciseName("standing-calf", "Panturrilha em pé (2ª variação - aulas)")
+        val defaultsByTitle = defaultWorkoutExercises()
+        allWorkouts().filter { it.title in defaultsByTitle.keys }.forEach { workout ->
+            deleteWorkoutExercises(workout.id)
+            val links = defaultsByTitle.getValue(workout.title).mapIndexed { index, row -> row.copy(workoutId = workout.id, sortOrder = index + 1) }
+            insertWorkoutExercises(links)
+        }
+        saveSetting(AppSettingEntity("default_workout_revision", "3"))
+    }
 }
+
+internal fun defaultWorkoutExercises(): Map<String, List<WorkoutExerciseEntity>> = mapOf(
+    "Upper" to listOf(
+        WorkoutExerciseEntity("", "ankle-mobility", 0, 20, "10–12|10–12", 2),
+        WorkoutExerciseEntity("", "scapula-cadence", 0, 30, "0", 1),
+        WorkoutExerciseEntity("", "bosu-crunch", 0, 90, "10–12|10–12|10–12", 3),
+        WorkoutExerciseEntity("", "supinated-pulldown", 0, 90, "10–12|10–12|6–8", 3, "6,7,7"),
+        WorkoutExerciseEntity("", "pronated-row", 0, 90, "10–12|6–8|6–8", 3, "30,35,35"),
+        WorkoutExerciseEntity("", "convergent-row", 0, 90, "10–12|6–8|6–8", 3, "22.5,27.5,27.5"),
+        WorkoutExerciseEntity("", "face-pull", 0, 90, "10–12|10–12|10–12", 3, "7,7,7"),
+        WorkoutExerciseEntity("", "dumbbell-bench", 0, 90, "10–12|6–8|6–8|6–8", 4, "30,32.5,35,27.5"),
+        WorkoutExerciseEntity("", "incline-machine-press", 0, 90, "10–12|6–8|6–8", 3, "20,22.5,25"),
+        WorkoutExerciseEntity("", "machine-shoulder-press", 0, 90, "10–12|10–12|6–8", 3, "10,10,12.5"),
+        WorkoutExerciseEntity("", "lateral-raise", 0, 90, "10–12|10–12|10–12", 3, "9,9,9"),
+        WorkoutExerciseEntity("", "incline-lateral-raise", 0, 90, "10–12|10–12|10–12", 3, "4,4,4"),
+        WorkoutExerciseEntity("", "triceps-french", 0, 90, "10–12|10–12|6–8", 3, "20,20,20")
+    ),
+    "Lower" to listOf(
+        WorkoutExerciseEntity("", "plantar-arch", 0, 45, "15–20|15–20|15–20", 3),
+        WorkoutExerciseEntity("", "ankle-mobility", 0, 20, "10–12|10–12", 2),
+        WorkoutExerciseEntity("", "foot-spacing", 0, 30, "-", 1),
+        WorkoutExerciseEntity("", "foot-support", 0, 30, "0", 1),
+        WorkoutExerciseEntity("", "arch-class", 0, 30, "0", 1),
+        WorkoutExerciseEntity("", "hip-thrust", 0, 90, "10–12|6–8|6–8|6–8", 4, "55,60,60,90"),
+        WorkoutExerciseEntity("", "free-squat", 0, 90, "10–12|10–12|6–8|6–8", 4, "15,15,20,20"),
+        WorkoutExerciseEntity("", "leg-press", 0, 90, "10–12|10–12|6–8|6–8", 4, "6,6,7,7"),
+        WorkoutExerciseEntity("", "leg-curl", 0, 90, "10–12|10–12|6–8|6–8", 4, "15,15,17.5,17.5"),
+        WorkoutExerciseEntity("", "leg-extension", 0, 90, "10–12|10–12|6–8", 3, "13,13,14"),
+        WorkoutExerciseEntity("", "stiff", 0, 90, "10–12|10–12|6–8|6–8", 4, "10,10,10,10"),
+        WorkoutExerciseEntity("", "dumbbell-curl", 0, 90, "10–12|10–12|10–12", 3, "10,10,10")
+    ),
+    "Cardio" to listOf(WorkoutExerciseEntity("", "walk", 0, 0, "6 km · 60 min · 6 km/h · 10 min/km", 1)),
+    "Upper 2" to listOf(
+        WorkoutExerciseEntity("", "ankle-mobility", 0, 20, "10–12|10–12", 2),
+        WorkoutExerciseEntity("", "bracing", 0, 30, "-", 1),
+        WorkoutExerciseEntity("", "scapula-cadence", 0, 30, "0", 1),
+        WorkoutExerciseEntity("", "bosu-crunch", 0, 90, "10–12|10–12|10–12", 3),
+        WorkoutExerciseEntity("", "supinated-pulldown", 0, 90, "10–12|10–12|Cluster set", 3, "8,6,7"),
+        WorkoutExerciseEntity("", "neutral-row", 0, 90, "10–12|10–12|Cluster set", 3, "22.5,22.5,25"),
+        WorkoutExerciseEntity("", "machine-bench", 0, 90, "10–12|10–12|Cluster set", 3, "22.5,22.5,25"),
+        WorkoutExerciseEntity("", "machine-shoulder-press", 0, 90, "10–12|10–12|Cluster set", 3, "10,10,12.5"),
+        WorkoutExerciseEntity("", "close-grip-dumbbell", 0, 90, "10–12|6–8|6–8", 3, "30,35,35"),
+        WorkoutExerciseEntity("", "lateral-raise", 0, 90, "10–12|10–12|10–12|10–12", 4, "9,9,9,9"),
+        WorkoutExerciseEntity("", "triceps-forehead", 0, 90, "10–12|10–12|10–12", 3, "10,10,10")
+    ),
+    "Lower 2" to listOf(
+        WorkoutExerciseEntity("", "plantar-arch", 0, 45, "15–20|15–20|15–20", 3),
+        WorkoutExerciseEntity("", "ankle-mobility", 0, 20, "10–12|10–12", 2),
+        WorkoutExerciseEntity("", "foot-spacing", 0, 30, "-", 1),
+        WorkoutExerciseEntity("", "foot-support", 0, 30, "0", 1),
+        WorkoutExerciseEntity("", "arch-class", 0, 30, "0", 1),
+        WorkoutExerciseEntity("", "bracing", 0, 30, "-", 1),
+        WorkoutExerciseEntity("", "hip-thrust", 0, 90, "10–12|10–12|Cluster set", 3, "55,55,55"),
+        WorkoutExerciseEntity("", "hack-squat", 0, 90, "10–12|Cluster set", 2, "20,22.5"),
+        WorkoutExerciseEntity("", "leg-extension", 0, 90, "10–12|10–12|Cluster set", 3, "13,14,14"),
+        WorkoutExerciseEntity("", "leg-curl", 0, 90, "10–12|10–12|Cluster set", 3, "15,15,17.5"),
+        WorkoutExerciseEntity("", "standing-calf", 0, 90, "10–12|Muscle rounds", 2, "15,5"),
+        WorkoutExerciseEntity("", "scott-curl", 0, 90, "10–12|10–12|10–12", 3, "12,12,12")
+    )
+)
+
+internal fun defaultExerciseCatalog(): List<ExerciseEntity> = listOf(
+    ExerciseEntity("plantar-arch", "Manutenção do arco plantar", "Preparação"),
+    ExerciseEntity("ankle-mobility", "Mobilidade de tornozelo", "Preparação"),
+    ExerciseEntity("bosu-crunch", "Abdominal infra no bosu", "Abdômen"),
+    ExerciseEntity("supinated-pulldown", "Puxada supinada", "Costas"),
+    ExerciseEntity("pronated-row", "Remada máquina pegada pronada", "Costas"),
+    ExerciseEntity("neutral-row", "Remada máquina pegada neutra", "Costas"),
+    ExerciseEntity("convergent-row", "Serrote convergente", "Costas"),
+    ExerciseEntity("face-pull", "Face pull", "Ombros"),
+    ExerciseEntity("dumbbell-bench", "Supino reto com halteres", "Peito"),
+    ExerciseEntity("incline-machine-press", "Supino inclinado máquina", "Peito"),
+    ExerciseEntity("machine-shoulder-press", "Desenvolvimento máquina", "Ombros"),
+    ExerciseEntity("lateral-raise", "Elevação lateral halteres", "Ombros"),
+    ExerciseEntity("incline-lateral-raise", "Elevação lateral inclinada", "Ombros"),
+    ExerciseEntity("hip-thrust", "Elevação pélvica máquina", "Glúteos"),
+    ExerciseEntity("hack-squat", "Hack machine", "Quadríceps"),
+    ExerciseEntity("leg-extension", "Cadeira extensora", "Quadríceps"),
+    ExerciseEntity("leg-curl", "Cadeira flexora", "Posterior"),
+    ExerciseEntity("free-squat", "Agachamento livre", "Quadríceps"),
+    ExerciseEntity("leg-press", "Leg press horizontal", "Quadríceps"),
+    ExerciseEntity("stiff", "Stiff", "Posterior"),
+    ExerciseEntity("walk", "Caminhada", "Cardio"),
+    ExerciseEntity("scapula-cadence", "Aula posicionamento das escápulas e cadência", "Preparação"),
+    ExerciseEntity("foot-spacing", "Aula afastamento dos pés", "Preparação"),
+    ExerciseEntity("foot-support", "Aula apoio dos pés", "Preparação"),
+    ExerciseEntity("arch-class", "Aula arco plantar", "Preparação"),
+    ExerciseEntity("bracing", "Manobra do bracing", "Preparação"),
+    ExerciseEntity("triceps-french", "Tríceps francês banco inclinado 30°", "Tríceps"),
+    ExerciseEntity("triceps-forehead", "Tríceps testa halteres", "Tríceps"),
+    ExerciseEntity("close-grip-dumbbell", "Supino fechado halteres", "Tríceps"),
+    ExerciseEntity("machine-bench", "Supino reto máquina", "Peito"),
+    ExerciseEntity("standing-calf", "Panturrilha em pé (2ª variação - aulas)", "Panturrilha"),
+    ExerciseEntity("scott-curl", "Rosca Scott máquina", "Bíceps"),
+    ExerciseEntity("dumbbell-curl", "Rosca halteres", "Bíceps")
+)
