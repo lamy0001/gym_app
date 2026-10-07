@@ -12,3 +12,4 @@ backup-device-data/
 captures/
 .externalNativeBuild/
 .cxx/
+.tmp/

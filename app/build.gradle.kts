@@ -15,11 +15,12 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.lamy.gymapp"
+        applicationId = providers.gradleProperty("qaApplicationId").getOrElse("com.lamy.gymapp")
+        testInstrumentationRunner = "com.lamy.gymapp.GymUiTestRunner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.2.4"
+        versionCode = 11
+        versionName = "0.2.9"
     }
 
     buildFeatures { compose = true }

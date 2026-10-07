@@ -46,6 +46,7 @@ interface GymDao {
     @Query("SELECT * FROM workout_sessions ws WHERE ws.completed = 1 AND ws.finishedAt IS NOT NULL AND EXISTS (SELECT 1 FROM session_sets ss WHERE ss.sessionId = ws.id AND ss.completed = 1) ORDER BY ws.finishedAt") fun observeCompletedSessions(): Flow<List<WorkoutSessionEntity>>
     @Query("SELECT * FROM workout_sessions WHERE id = :sessionId LIMIT 1") suspend fun session(sessionId: String): WorkoutSessionEntity?
     @Query("SELECT * FROM session_sets WHERE sessionId = :sessionId") fun observeSessionSets(sessionId: String): Flow<List<SessionSetEntity>>
+    @Query("SELECT * FROM session_sets WHERE sessionId = :sessionId AND exerciseId = :exerciseId") suspend fun sessionSetsForExercise(sessionId: String, exerciseId: String): List<SessionSetEntity>
     @Query("SELECT ss.* FROM session_sets ss INNER JOIN workout_sessions ws ON ws.id = ss.sessionId WHERE ws.completed = 1 AND ss.exerciseId = :exerciseId AND ss.completed = 1 AND ss.loadKg IS NOT NULL AND (:periodId IS NULL OR ws.periodId = :periodId) ORDER BY ws.finishedAt, ss.setIndex") fun observeExerciseHistory(exerciseId: String, periodId: String?): Flow<List<SessionSetEntity>>
     @Query("SELECT * FROM app_settings") fun observeSettings(): Flow<List<AppSettingEntity>>
     @Query("SELECT * FROM training_periods WHERE active = 1 ORDER BY startedAt DESC LIMIT 1") fun observeActivePeriod(): Flow<TrainingPeriodEntity?>
@@ -75,6 +76,7 @@ interface GymDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun saveLoadProfile(items: List<ExerciseLoadProfileEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertSession(session: WorkoutSessionEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun saveSessionSet(set: SessionSetEntity)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun saveSessionSets(sets: List<SessionSetEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun saveSetting(setting: AppSettingEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertPeriod(period: TrainingPeriodEntity)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertPeriodLink(link: WorkoutPeriodLinkEntity)
@@ -179,11 +181,11 @@ suspend fun GymDao.ensureCatalog() {
         WorkoutExerciseEntity("lower-2", "scott-curl", 10, 75, "10–12", 3)
     ))
     val defaultLoads = mapOf(
-        "supinated-pulldown" to listOf(6.0, 6.0, 7.0),
+        "supinated-pulldown" to listOf(6.0, 7.0, 7.0),
         "pronated-row" to listOf(30.0, 35.0, 35.0),
         "convergent-row" to listOf(22.5, 27.5, 27.5),
         "face-pull" to listOf(7.0, 7.0, 7.0),
-        "dumbbell-bench" to listOf(30.0, 32.5, 35.0, 35.0),
+        "dumbbell-bench" to listOf(30.0, 32.5, 35.0, 27.5),
         "incline-machine-press" to listOf(20.0, 22.5, 25.0),
         "machine-shoulder-press" to listOf(10.0, 10.0, 12.5),
         "lateral-raise" to listOf(9.0, 9.0, 9.0),
@@ -192,33 +194,27 @@ suspend fun GymDao.ensureCatalog() {
         "machine-bench" to listOf(22.5, 22.5, 25.0),
         "close-grip-dumbbell" to listOf(30.0, 35.0, 35.0),
         "triceps-forehead" to listOf(10.0, 10.0, 10.0),
-        "hip-thrust" to listOf(60.0, 60.0, 60.0, 90.0),
+        "hip-thrust" to listOf(55.0, 60.0, 60.0, 90.0),
         "free-squat" to listOf(15.0, 15.0, 20.0, 20.0),
         "leg-press" to listOf(6.0, 6.0, 7.0, 7.0),
         "leg-curl" to listOf(15.0, 15.0, 17.5, 17.5),
         "leg-extension" to listOf(13.0, 13.0, 14.0),
         "stiff" to listOf(10.0, 10.0, 10.0, 10.0),
         "dumbbell-curl" to listOf(10.0, 10.0, 10.0),
-        "hack-squat" to listOf(20.0, 20.0, 22.5),
-        "standing-calf" to listOf(15.0, 15.0, 15.0),
+        "hack-squat" to listOf(20.0, 22.5),
+        "standing-calf" to listOf(15.0, 5.0),
         "scott-curl" to listOf(12.0, 12.0, 12.0)
     )
     val existing = allLoadProfiles().map { "${it.exerciseId}:${it.setIndex}" }.toSet()
     defaultLoads.flatMap { (exerciseId, loads) -> loads.mapIndexed { index, value -> ExerciseLoadProfileEntity(exerciseId, index + 1, value) } }
         .filterNot { "${it.exerciseId}:${it.setIndex}" in existing }
         .let { if (it.isNotEmpty()) saveLoadProfile(it) }
-    val plannedByWorkout = mapOf(
-        "upper-1:ankle-mobility" to "", "upper-1:supinated-pulldown" to "6,6,7", "upper-1:pronated-row" to "30,35,35", "upper-1:convergent-row" to "22.5,27.5,27.5", "upper-1:face-pull" to "7,7,7", "upper-1:dumbbell-bench" to "30,32.5,35,35", "upper-1:incline-machine-press" to "20,22.5,25", "upper-1:machine-shoulder-press" to "10,10,12.5", "upper-1:lateral-raise" to "9,9,9", "upper-1:triceps-french" to "20,20,20",
-        "upper-2:supinated-pulldown" to "8,6,7", "upper-2:neutral-row" to "22.5,22.5,25", "upper-2:machine-bench" to "22.5,22.5,25", "upper-2:machine-shoulder-press" to "10,10,12.5", "upper-2:close-grip-dumbbell" to "30,35,35", "upper-2:lateral-raise" to "9,9,9", "upper-2:triceps-forehead" to "10,10,10",
-        "lower-1:hip-thrust" to "60,60,60,90", "lower-1:free-squat" to "15,15,20,20", "lower-1:leg-press" to "6,6,7,7", "lower-1:leg-curl" to "15,15,17.5,17.5", "lower-1:leg-extension" to "13,13,14", "lower-1:stiff" to "10,10,10,10", "lower-1:dumbbell-curl" to "10,10,10",
-        "lower-2:hip-thrust" to "55,55,55", "lower-2:hack-squat" to "20,20,22.5", "lower-2:leg-extension" to "13,14,14", "lower-2:leg-curl" to "15,15,17.5", "lower-2:standing-calf" to "15,15,15", "lower-2:scott-curl" to "12,12,12"
-    )
-    plannedByWorkout.forEach { (key, loads) -> val parts = key.split(":"); updatePlannedLoads(parts[0], parts[1], loads) }
+    val defaultsByTitle = defaultWorkoutExercises()
+    // Apply corrected templates once below; never overwrite edited plans on every launch.
     if (allSettings().firstOrNull { it.key == "default_workout_revision" }?.value != "3") {
         updateExerciseName("machine-shoulder-press", "Desenvolvimento máquina pegada pronada")
         updateExerciseName("machine-bench", "Supino reto na máquina inclinada")
         updateExerciseName("standing-calf", "Panturrilha em pé (2ª variação - aulas)")
-        val defaultsByTitle = defaultWorkoutExercises()
         allWorkouts().filter { it.title in defaultsByTitle.keys }.forEach { workout ->
             deleteWorkoutExercises(workout.id)
             val links = defaultsByTitle.getValue(workout.title).mapIndexed { index, row -> row.copy(workoutId = workout.id, sortOrder = index + 1) }

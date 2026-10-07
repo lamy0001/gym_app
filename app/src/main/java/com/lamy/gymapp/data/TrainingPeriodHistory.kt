@@ -13,10 +13,11 @@ internal fun peakLoadsBySession(sets: List<SessionSetEntity>): List<Double> =
 internal fun scheduledDaysThisWeek(
     sessions: List<WorkoutSessionEntity>,
     today: LocalDate,
-    zoneId: ZoneId
+    zoneId: ZoneId,
+    scheduledDays: Set<Int> = defaultTrainingDays
 ): Int {
     val monday = today.minusDays((today.dayOfWeek.value - 1).toLong())
     return sessions.asSequence().filter { it.completed }.mapNotNull { session ->
         session.finishedAt?.let { Instant.ofEpochMilli(it).atZone(zoneId).toLocalDate() }
-    }.filter { date -> date in monday..today && date.dayOfWeek.value <= 5 }.distinct().count()
+    }.filter { date -> date in monday..today && date.dayOfWeek.value in scheduledDays }.distinct().count()
 }
