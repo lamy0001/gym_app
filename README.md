@@ -118,7 +118,7 @@ O parâmetro `--full-app` também salva arquivos privados e preferências em `ap
 
 ## Validar as interações no Android
 
-Validação da 0.2.10: 14 testes de lógica aprovados e ensaio de restauração/migração de uma cópia do banco existente com todas as tabelas de dados originais preservadas por contagem e SHA-256. A validação visual no aparelho depende de ele estar desbloqueado; ela e a reinstalação ainda estão pendentes nesta publicação.
+Validação da 0.2.10 concluída no Galaxy S25: 14 testes de lógica aprovados, testes funcionais de UI aprovados e capturas reais inspecionadas para conferir os estados do “+”, o aviso âmbar em outro treino e a reabertura do card ao desmarcar todas as séries. O ensaio de restauração/migração e a reinstalação assistida autorizada preservaram todas as tabelas de dados originais, verificadas por contagem e SHA-256. Somente a identidade do esquema Room mudou e a tabela de progressões foi adicionada.
 
 Os testes de UI usam uma instalação separada para manter os dados reais fora da simulação:
 
