@@ -116,6 +116,9 @@ import com.lamy.gymapp.data.workoutIndexForDate
 import com.lamy.gymapp.data.parseLoad
 import com.lamy.gymapp.data.validLoadInput
 import com.lamy.gymapp.data.allSetsCompleted
+import com.lamy.gymapp.data.ExerciseProgressionEntity
+import com.lamy.gymapp.data.progressionAfterLoadChange
+import com.lamy.gymapp.data.toggleExerciseSets
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -243,31 +246,27 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
         viewModelScope.launch { sessionMutex.withLock {
             val sessionId = ensureSession(workoutId, periodId)
             database.withTransaction {
+                val previous = database.dao().sessionSetsForExercise(sessionId, exerciseId).firstOrNull { it.setIndex == setIndex }
                 database.dao().saveSessionSet(com.lamy.gymapp.data.SessionSetEntity("$sessionId-$exerciseId-$setIndex", sessionId, exerciseId, setIndex, loadKg = loadKg, completed = completed, increaseMarked = increaseMarked))
+                if (increaseMarked && previous?.increaseMarked != true) {
+                    database.dao().saveProgression(ExerciseProgressionEntity(exerciseId, setIndex, sessionId, loadKg))
+                } else if (!increaseMarked && previous?.increaseMarked == true) {
+                    if (database.dao().progression(exerciseId, setIndex)?.sourceSessionId == sessionId) database.dao().deleteProgression(exerciseId, setIndex)
+                }
                 if (loadKg != null) database.dao().saveLoadProfile(listOf(com.lamy.gymapp.data.ExerciseLoadProfileEntity(exerciseId, setIndex, loadKg, userRecorded = true)))
             }
         } }
     }
 
-    fun markExerciseSetsComplete(workoutId: String, periodId: String?, exerciseId: String, setCount: Int, fallbackLoads: List<Double?>) {
+    fun toggleExerciseSetsComplete(workoutId: String, periodId: String?, exerciseId: String, setCount: Int, fallbackLoads: List<Double?>, onDone: (Boolean) -> Unit) {
         viewModelScope.launch { sessionMutex.withLock {
             val sessionId = ensureSession(workoutId, periodId)
             database.withTransaction {
-                val alreadySaved = database.dao().sessionSetsForExercise(sessionId, exerciseId).associateBy { it.setIndex }
-                val completedSets = (1..setCount).map { number ->
-                    val previous = alreadySaved[number]
-                    com.lamy.gymapp.data.SessionSetEntity(
-                        id = "$sessionId-$exerciseId-$number",
-                        sessionId = sessionId,
-                        exerciseId = exerciseId,
-                        setIndex = number,
-                        loadKg = previous?.loadKg ?: fallbackLoads.getOrNull(number - 1),
-                        completed = true,
-                        increaseMarked = previous?.increaseMarked ?: false
-                    )
-                }
+                val alreadySaved = database.dao().sessionSetsForExercise(sessionId, exerciseId)
+                val completedSets = toggleExerciseSets(sessionId, exerciseId, setCount, alreadySaved, fallbackLoads)
                 database.dao().saveSessionSets(completedSets)
                 database.dao().saveLoadProfile(completedSets.mapNotNull { set -> set.loadKg?.let { com.lamy.gymapp.data.ExerciseLoadProfileEntity(exerciseId, set.setIndex, it, userRecorded = true) } })
+                onDone(allSetsCompleted(completedSets, setCount))
             }
         } }
     }
@@ -276,6 +275,12 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
         viewModelScope.launch { sessionMutex.withLock {
             database.withTransaction {
                 database.dao().saveLoadProfile(listOf(com.lamy.gymapp.data.ExerciseLoadProfileEntity(exerciseId, setIndex, loadKg, userRecorded = true)))
+                database.dao().progression(exerciseId, setIndex)?.let { goal ->
+                    val sessionId = _activeSessionId.value?.takeIf { _activeWorkoutId.value == workoutId }
+                    val updated = progressionAfterLoadChange(goal, sessionId, loadKg)
+                    if (updated == null) database.dao().deleteProgression(exerciseId, setIndex)
+                    else if (updated != goal) database.dao().saveProgression(updated)
+                }
                 _activeSessionId.value?.takeIf { _activeWorkoutId.value == workoutId }?.let { sessionId ->
                     val previous = database.dao().sessionSetsForExercise(sessionId, exerciseId).firstOrNull { it.setIndex == setIndex }
                         ?: com.lamy.gymapp.data.SessionSetEntity("$sessionId-$exerciseId-$setIndex", sessionId, exerciseId, setIndex)
@@ -365,6 +370,8 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
 
     fun loadProfile(exerciseId: String) = database.dao().observeLoadProfile(exerciseId)
 
+    fun progressions(exerciseId: String) = database.dao().observeProgressions(exerciseId)
+
     fun exerciseHistory(exerciseId: String, periodId: String?) = database.dao().observeExerciseHistory(exerciseId, periodId)
 
     fun saveSetting(key: String, value: String) {
@@ -392,7 +399,7 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
     fun exportBackup(context: Context, uri: android.net.Uri, onDone: (Boolean) -> Unit) {
         viewModelScope.launch {
             val dao = database.dao()
-            val root = JSONObject().put("format", "gym-app-backup").put("version", 1)
+            val root = JSONObject().put("format", "gym-app-backup").put("version", 2)
             fun array(block: JSONArray.() -> Unit) = JSONArray().apply(block)
             val exercises = dao.allExercises(); val workouts = dao.allWorkouts(); val links = dao.allWorkoutExercises(); val profiles = dao.allLoadProfiles(); val sessions = dao.allSessions(); val sessionSets = dao.allSessionSets(); val settings = dao.allSettings(); val periods = dao.allPeriods(); val periodLinks = dao.allPeriodLinks()
             root.put("exercises", array { exercises.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("muscleGroup", it.muscleGroup)) } })
@@ -404,6 +411,8 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
             root.put("settings", array { settings.forEach { put(JSONObject().put("key", it.key).put("value", it.value)) } })
             root.put("periods", array { periods.forEach { put(JSONObject().put("id", it.id).put("title", it.title).put("startedAt", it.startedAt).put("active", it.active)) } })
             root.put("periodLinks", array { periodLinks.forEach { put(JSONObject().put("workoutId", it.workoutId).put("periodId", it.periodId)) } })
+            val progressions = dao.allProgressions()
+            root.put("progressions", array { progressions.forEach { put(JSONObject().put("exerciseId", it.exerciseId).put("setIndex", it.setIndex).put("sourceSessionId", it.sourceSessionId).put("referenceLoadKg", it.referenceLoadKg ?: JSONObject.NULL)) } })
             val success = runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(root.toString(2).toByteArray()) } != null }.getOrDefault(false)
             onDone(success)
         }
@@ -430,6 +439,12 @@ class GymViewModel(private val database: GymDatabase) : ViewModel() {
                 dao.insertExercises(exercises); dao.insertWorkouts(workouts); dao.insertWorkoutExercises(links); dao.saveLoadProfile(profiles)
                 periods.forEach { dao.insertPeriod(it) }; periodLinks.forEach { dao.insertPeriodLink(it) }
                 sessions.forEach { dao.insertSession(it) }; sessionSets.forEach { dao.saveSessionSet(it) }; settings.forEach { dao.saveSetting(it) }
+                root.optJSONArray("progressions")?.let { goals ->
+                    repeat(goals.length()) { index ->
+                        val o = goals.getJSONObject(index)
+                        dao.saveProgression(ExerciseProgressionEntity(o.getString("exerciseId"), o.getInt("setIndex"), o.getString("sourceSessionId"), if (o.isNull("referenceLoadKg")) null else o.getDouble("referenceLoadKg")))
+                    }
+                }
             }.isSuccess
             onDone(success)
         }
@@ -1168,7 +1183,8 @@ private fun WorkoutScreen(
                     val loadProfile = remember(item.exerciseId) { viewModel.loadProfile(item.exerciseId) }
                         .collectAsStateWithLifecycle(initialValue = emptyList()).value.filter { it.userRecorded }
                     val exerciseSessionSets = savedSessionSets.filter { it.exerciseId == item.exerciseId }
-                    ExerciseCard(item, loadProfile, exerciseSessionSets, expanded[item.exerciseId] == true, onLoadChanged = { setIndex, value ->
+                    val goals = remember(item.exerciseId) { viewModel.progressions(item.exerciseId) }.collectAsStateWithLifecycle(initialValue = emptyList()).value
+                    ExerciseCard(item, loadProfile, exerciseSessionSets, goals, sessionId, expanded[item.exerciseId] == true, onLoadChanged = { setIndex, value ->
                         viewModel.updateSetLoad(workoutId, item.exerciseId, setIndex, value)
                     }, onSetChanged = { setIndex, loadKg, completed, increaseMarked ->
                         viewModel.saveSessionSet(workoutId, periodId, item.exerciseId, setIndex, loadKg, completed, increaseMarked)
@@ -1176,8 +1192,7 @@ private fun WorkoutScreen(
                         val plannedLoads = item.plannedLoadsCsv.split(",").map { it.trim().toDoubleOrNull() }
                         val userLoads = loadProfile.associate { it.setIndex to it.lastUsedLoadKg }
                         val fallbackLoads = (1..item.setCount).map { number -> userLoads[number] ?: plannedLoads.getOrNull(number - 1) }
-                        viewModel.markExerciseSetsComplete(workoutId, periodId, item.exerciseId, item.setCount, fallbackLoads)
-                        expanded[item.exerciseId] = false
+                        viewModel.toggleExerciseSetsComplete(workoutId, periodId, item.exerciseId, item.setCount, fallbackLoads) { completed -> expanded[item.exerciseId] = !completed }
                     }) {
                         expanded[item.exerciseId] = !(expanded[item.exerciseId] ?: true)
                     }
@@ -1192,6 +1207,8 @@ private fun ExerciseCard(
     item: WorkoutExerciseRow,
     loadProfile: List<com.lamy.gymapp.data.ExerciseLoadProfileEntity>,
     sessionSets: List<com.lamy.gymapp.data.SessionSetEntity>,
+    progressions: List<ExerciseProgressionEntity>,
+    sessionId: String?,
     isExpanded: Boolean,
     onLoadChanged: (Int, Double) -> Unit,
     onSetChanged: (Int, Double?, Boolean, Boolean) -> Unit,
@@ -1199,6 +1216,8 @@ private fun ExerciseCard(
     onCheckAll: () -> Unit,
     onToggle: () -> Unit
 ) {
+    val allComplete = allSetsCompleted(sessionSets, item.setCount)
+    val pending = progressions.filter { it.sourceSessionId != sessionId && it.setIndex in 1..item.setCount }
     var annotation by remember(item.exerciseId) { mutableStateOf(item.annotation) }
     var restRemaining by remember(item.exerciseId) { mutableIntStateOf(0) }
     LaunchedEffect(restRemaining) {
@@ -1217,6 +1236,7 @@ private fun ExerciseCard(
                 Column(Modifier.weight(1f).clickable(onClick = onToggle)) {
                     Text(item.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color(0xFF263A2B))
                     Text("${item.muscleGroup} · descanso ${item.restSeconds}s", color = Color(0xFF657568), style = MaterialTheme.typography.labelSmall)
+                    if (pending.isNotEmpty()) ProgressionBadge("↑ ${pending.size} ${if (pending.size == 1) "série para progredir" else "séries para progredir"}")
                     if (item.annotation.isNotBlank()) Text(item.annotation, color = Color(0xFF385942), style = MaterialTheme.typography.bodySmall, maxLines = 2)
                 }
                 TextButton(
@@ -1229,8 +1249,8 @@ private fun ExerciseCard(
                         style = MaterialTheme.typography.labelSmall
                     )
                 }
-                IconButton(onClick = onCheckAll) {
-                    Icon(Icons.Default.DoneAll, contentDescription = "Marcar todas as séries de ${item.name}", tint = Green)
+                IconButton(onClick = onCheckAll, modifier = Modifier.background(if (allComplete) Green else Color.Transparent, RoundedCornerShape(12.dp))) {
+                    Icon(Icons.Default.DoneAll, contentDescription = "${if (allComplete) "Desmarcar" else "Marcar"} todas as séries de ${item.name}", tint = if (allComplete) Color.White else Green)
                 }
                 IconButton(onClick = onToggle) {
                     Icon(if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = "Abrir ou fechar ${item.name}", tint = Green)
@@ -1249,6 +1269,8 @@ private fun ExerciseCard(
                         load = effectivePreset?.let(::formatLoad).orEmpty(),
                         completed = saved?.completed == true,
                         increaseMarked = saved?.increaseMarked == true,
+                        progression = progressions.firstOrNull { it.setIndex == setIndex + 1 },
+                        sessionId = sessionId,
                         onLoadChanged = { value -> parseLoad(value)?.let { onLoadChanged(setIndex + 1, it) } },
                         rowColor = if (setIndex % 2 == 0) Color(0xFFFBFCFA) else Color(0xFFEDF3EB),
                         onSetChanged = { loadKg, completed, increaseMarked -> onSetChanged(setIndex + 1, loadKg, completed, increaseMarked) }
@@ -1271,12 +1293,21 @@ private fun ExerciseCard(
 }
 
 @Composable
+private fun ProgressionBadge(text: String) {
+    Surface(color = Color(0xFFFFE5AD), shape = RoundedCornerShape(8.dp)) {
+        Text(text, color = Color(0xFF805000), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+    }
+}
+
+@Composable
 private fun SetRow(
     number: Int,
     reps: String,
     load: String,
     completed: Boolean,
     increaseMarked: Boolean,
+    progression: ExerciseProgressionEntity?,
+    sessionId: String?,
     onLoadChanged: (String) -> Unit,
     rowColor: Color,
     onSetChanged: (Double?, Boolean, Boolean) -> Unit
@@ -1287,7 +1318,9 @@ private fun SetRow(
     LaunchedEffect(load, focused) {
         if (!focused && parseLoad(enteredLoad.text) != parseLoad(load)) enteredLoad = TextFieldValue(load, TextRange(load.length))
     }
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().background(rowColor).padding(horizontal = 10.dp, vertical = 8.dp)) {
+    val needsIncrease = progression != null && progression.sourceSessionId != sessionId
+    Column(Modifier.fillMaxWidth().background(if (needsIncrease) Color(0xFFFFF4DE) else rowColor)) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
         Surface(modifier = Modifier.width(28.dp).height(28.dp), color = SoftGreen, shape = RoundedCornerShape(9.dp)) {
             Box(contentAlignment = Alignment.Center) { Text("$number", color = Green, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold) }
         }
@@ -1327,7 +1360,14 @@ private fun SetRow(
             shape = RoundedCornerShape(12.dp),
             border = androidx.compose.foundation.BorderStroke(1.dp, if (increaseMarked) Green else Color(0xFFC5D3C6))
         ) {
-            Box(contentAlignment = Alignment.Center) { Text("+", color = if (increaseMarked) Green else Color(0xFF9DB2A9), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium) }
+            Box(contentAlignment = Alignment.Center) { Text("+", modifier = Modifier.semantics { contentDescription = "Aumentar carga na próxima vez, série $number" }, color = if (increaseMarked) Green else Color(0xFF9DB2A9), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium) }
         }
+    }
+    if (needsIncrease || increaseMarked) {
+        Column(Modifier.padding(start = 48.dp, end = 10.dp, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            ProgressionBadge(if (needsIncrease) "↑ Aumentar carga" else "↑ Aumentar na próxima vez")
+            if (needsIncrease && progression?.referenceLoadKg != null) Text("Última carga: ${formatLoad(progression.referenceLoadKg)} kg", color = Color(0xFF805000), style = MaterialTheme.typography.labelSmall)
+        }
+    }
     }
 }

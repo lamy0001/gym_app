@@ -6,19 +6,9 @@ Aplicativo Android para organizar treinos de musculação e cardio, acompanhar c
 
 Baixe o instalador Android (APK) diretamente deste repositório:
 
-**Versão mais recente: [Gym App v0.2.9](releases/GymApp-v0.2.9-debug.apk)**.
+**Versão mais recente: [Gym App v0.2.10](releases/GymApp-v0.2.10-debug.apk)**.
 
-- [Gym App v0.1.0 (APK de teste)](releases/GymApp-v0.1.0-debug.apk)
-- [Gym App v0.2.0 (APK de teste)](releases/GymApp-v0.2.0-debug.apk)
-- [Gym App v0.2.1 (APK de teste)](releases/GymApp-v0.2.1-debug.apk)
-- [Gym App v0.2.2 (APK de teste)](releases/GymApp-v0.2.2-debug.apk)
-- [Gym App v0.2.3 (APK de teste)](releases/GymApp-v0.2.3-debug.apk)
-- [Gym App v0.2.4 (APK de teste)](releases/GymApp-v0.2.4-debug.apk)
-- [Gym App v0.2.5 (APK de teste)](releases/GymApp-v0.2.5-debug.apk)
-- [Gym App v0.2.6 (APK de teste)](releases/GymApp-v0.2.6-debug.apk)
-- [Gym App v0.2.7 (APK de teste)](releases/GymApp-v0.2.7-debug.apk)
-- [Gym App v0.2.8 (APK de teste)](releases/GymApp-v0.2.8-debug.apk)
-- [Gym App v0.2.9 (APK de teste)](releases/GymApp-v0.2.9-debug.apk)
+**Atenção à assinatura:** o APK 0.2.10 usa uma nova chave, pois a chave das versões anteriores não foi encontrada no computador migrado nem no Git. Ele não instala por cima da 0.2.9. Para quem já usa a versão antiga, não desinstale por conta própria: é necessário backup completo, ensaio de restauração, autorização de reinstalação e comparação dos dados após restaurar. Novas instalações não têm essa restrição.
 
 É uma compilação de depuração para instalação direta; o Android pode solicitar autorização para instalar apps desta fonte. O APK não é distribuído pela Play Store.
 
@@ -40,6 +30,8 @@ A versão atual implementa o fluxo principal do aplicativo:
 - Sessão em andamento e séries marcadas são restauradas quando o app é reaberto; voltar ao menu não finaliza o treino.
 - Cada exercício tem anotação persistente, exibida sob o grupo muscular e o descanso. O cabeçalho usa um tom mais escuro e permite marcar todas as séries de uma vez.
 - Concluir a última série individualmente, pelo check ou pelo “+”, recolhe o card automaticamente. O duplo check marca todas as séries e recolhe o card; reabri-lo mantém os checks. O comando aparece também em cards de uma só série.
+- Na 0.2.10, o duplo check é reversível: quando todas estão marcadas, outro toque desmarca todas e reabre o card, sem apagar cargas, repetições ou sinais de progressão.
+- O “+” registra uma intenção de progressão por exercício e número de série. Na próxima execução, em qualquer treino ou período, a série recebe fundo âmbar, o selo “↑ Aumentar carga” e a carga anterior como referência. Não há aumento automático de peso. Registrar uma carga maior na próxima execução resolve o aviso; manter ou reduzir o peso preserva-o. Desmarcar o “+” na sessão de origem cancela a intenção.
 - Os cinco treinos padrão foram revistos com base nas imagens recebidas, incluindo ordem, séries, repetições por série, cargas planejadas e dados da caminhada.
 - Cargas continuam compartilhadas por exercício entre períodos e treinos, aparecendo como preset ao reutilizar um exercício.
 - Interface dos exercícios no layout 10 com paleta Floresta: cabeçalho destacado, séries em faixas alternadas, carga editável e ações de concluir/aumentar carga separadas visualmente.
@@ -75,6 +67,7 @@ O banco separa:
 - `workouts`: treinos cadastrados.
 - `workout_exercises`: exercícios vinculados a cada treino.
 - `exercise_load_profiles`: última carga utilizada por exercício e série.
+- `exercise_progressions`: avisos pendentes de aumento por exercício e série, independentes dos checks da sessão.
 - `workout_sessions` e `session_sets`: sessões vinculadas ao período em que ocorreram, séries concluídas e evolução.
 - `training_periods` e `workout_period_links`: ciclos de treino e treinos independentes de cada ciclo.
 - `app_settings`: preferências e lembretes.
@@ -113,9 +106,19 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 Os dados do usuário devem permanecer no banco local durante atualizações do aplicativo. Novas versões devem usar migrações Room, sem apagar e recriar o banco.
 
-A versão 0.2.9 mantém o esquema Room 5. A instalação usa `adb install -r` e a mesma chave de assinatura da versão anterior. Antes e depois da atualização, `scripts/device_data_snapshot.py` pode registrar uma cópia local do banco e hashes por tabela para verificar a preservação dos dados. Backups ficam em `backup-device-data/`, ignorado pelo Git; chaves de assinatura não são publicadas.
+A versão 0.2.10 usa o esquema Room 6, com migração aditiva 5 → 6: cria a tabela de progressões e recupera o último “+” registrado por série. Nenhuma tabela de dados existente é apagada. Backups JSON novos incluem progressões; backups anteriores continuam aceitos.
+
+Atualizações normais devem usar `adb install -r` e a mesma chave de assinatura da versão instalada. A chave privada não pode ser recuperada do APK. O certificado das versões até 0.2.9 tem SHA-256 `88474d653446356daa97129ae4e1ec6e06f61fae29d8c2e4e82979a1a623466b`. A versão 0.2.10 tem SHA-256 `c577ee1ac641e02212be4f1095215551481363fa953f4d333816a0a80792c76c`. A troca exige reinstalação assistida com backup verificado, não uma atualização normal.
+
+A nova chave deve ser preservada em backup seguro. A compilação procura `.toolchain/signing/debug.keystore` ou o caminho definido em `GYM_SIGNING_KEYSTORE`; `.toolchain` é ignorada pelo Git. Sem essa chave, uma nova compilação de depuração pode ter outra assinatura e não deve ser distribuída como atualização.
+
+Antes e depois da atualização, `scripts/device_data_snapshot.py` pode registrar uma cópia local do banco e hashes por tabela para verificar a preservação dos dados (aceita `--adb` para indicar o executável). Na migração, a identidade do esquema Room muda e a nova tabela é adicionada; as demais tabelas devem manter os mesmos registros. Backups ficam em `backup-device-data/`, ignorado pelo Git.
+
+O parâmetro `--full-app` também salva arquivos privados e preferências em `app-data.tar`. `scripts/compare_data_snapshots.py ANTES DEPOIS` verifica se todas as tabelas de dados originais mantiveram contagens e hashes. O ensaio da migração usa somente o pacote `.validation`; nunca se limpa ou desinstala o app real como etapa de teste.
 
 ## Validar as interações no Android
+
+Validação da 0.2.10: 14 testes de lógica aprovados e ensaio de restauração/migração de uma cópia do banco existente com todas as tabelas de dados originais preservadas por contagem e SHA-256. A validação visual no aparelho depende de ele estar desbloqueado; ela e a reinstalação ainda estão pendentes nesta publicação.
 
 Os testes de UI usam uma instalação separada para manter os dados reais fora da simulação:
 
@@ -127,7 +130,7 @@ adb shell pm grant com.lamy.gymapp.validation android.permission.POST_NOTIFICATI
 adb shell am instrument -w com.lamy.gymapp.validation.test/com.lamy.gymapp.GymUiTestRunner
 ```
 
-O runner recusa executar fora do ID de validação. Ele verifica edição numérica da carga, checks individuais, recolhimento após a última série, duplo check, card de uma série, restauração da sessão, controles de lembrete, seletor de horário e abertura do app pela notificação a partir da tela inicial do celular. Após validar, remova somente os pacotes `.validation` e `.validation.test` e recompile sem `qaApplicationId` para gerar o APK final.
+O runner recusa executar fora do ID de validação. Ele verifica edição numérica, checks individuais, recolhimento após a última série, duplo check reversível, preservação do “+”, preset e aviso de progressão em outro treino, resolução do aviso ao aumentar a carga, card de uma série, restauração da sessão, controles de lembrete e abertura pela notificação. Capturas de tela são salvas nos arquivos externos do pacote QA. O modo `-e migrationOnly true` abre uma cópia do banco antigo e valida a migração Room sem simular treinos. Após validar, remova somente os pacotes `.validation` e `.validation.test` e recompile sem `qaApplicationId` para gerar o APK final.
 
 ### Períodos de treino
 

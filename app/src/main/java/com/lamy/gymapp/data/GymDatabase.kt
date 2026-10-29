@@ -17,6 +17,9 @@ data class WorkoutExerciseEntity(val workoutId: String, val exerciseId: String, 
 @Entity(tableName = "exercise_load_profiles", primaryKeys = ["exerciseId", "setIndex"])
 data class ExerciseLoadProfileEntity(val exerciseId: String, val setIndex: Int, val lastUsedLoadKg: Double, val userRecorded: Boolean = false)
 
+@Entity(tableName = "exercise_progressions", primaryKeys = ["exerciseId", "setIndex"])
+data class ExerciseProgressionEntity(val exerciseId: String, val setIndex: Int, val sourceSessionId: String, val referenceLoadKg: Double?)
+
 @Entity(tableName = "workout_sessions")
 data class WorkoutSessionEntity(@PrimaryKey val id: String, val workoutId: String, val startedAt: Long, val finishedAt: Long? = null, val completed: Boolean = false, val periodId: String? = null)
 
@@ -36,6 +39,11 @@ data class WorkoutExerciseRow(val exerciseId: String, val name: String, val musc
 
 @Dao
 interface GymDao {
+    @Query("SELECT * FROM exercise_progressions WHERE exerciseId = :exerciseId ORDER BY setIndex") fun observeProgressions(exerciseId: String): Flow<List<ExerciseProgressionEntity>>
+    @Query("SELECT * FROM exercise_progressions") suspend fun allProgressions(): List<ExerciseProgressionEntity>
+    @Query("SELECT * FROM exercise_progressions WHERE exerciseId = :exerciseId AND setIndex = :setIndex") suspend fun progression(exerciseId: String, setIndex: Int): ExerciseProgressionEntity?
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun saveProgression(item: ExerciseProgressionEntity)
+    @Query("DELETE FROM exercise_progressions WHERE exerciseId = :exerciseId AND setIndex = :setIndex") suspend fun deleteProgression(exerciseId: String, setIndex: Int)
     @Query("SELECT * FROM workouts ORDER BY sortOrder") fun observeWorkouts(): Flow<List<WorkoutEntity>>
     @Query("SELECT w.* FROM workouts w INNER JOIN workout_period_links l ON l.workoutId = w.id WHERE l.periodId = :periodId ORDER BY w.sortOrder") fun observeWorkoutsForPeriod(periodId: String): Flow<List<WorkoutEntity>>
     @Query("SELECT * FROM exercises ORDER BY name") fun observeExercises(): Flow<List<ExerciseEntity>>
@@ -91,11 +99,28 @@ interface GymDao {
     @Query("UPDATE workout_sessions SET finishedAt = :finishedAt, completed = 1 WHERE id = :sessionId") suspend fun finishSession(sessionId: String, finishedAt: Long)
 }
 
-@Database(entities = [ExerciseEntity::class, WorkoutEntity::class, WorkoutExerciseEntity::class, ExerciseLoadProfileEntity::class, WorkoutSessionEntity::class, SessionSetEntity::class, AppSettingEntity::class, TrainingPeriodEntity::class, WorkoutPeriodLinkEntity::class], version = 5, exportSchema = false)
+@Database(entities = [ExerciseEntity::class, WorkoutEntity::class, WorkoutExerciseEntity::class, ExerciseLoadProfileEntity::class, ExerciseProgressionEntity::class, WorkoutSessionEntity::class, SessionSetEntity::class, AppSettingEntity::class, TrainingPeriodEntity::class, WorkoutPeriodLinkEntity::class], version = 6, exportSchema = false)
 abstract class GymDatabase : RoomDatabase() {
     abstract fun dao(): GymDao
     companion object {
-        fun create(context: Context): GymDatabase = Room.databaseBuilder(context, GymDatabase::class.java, "gym_app.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
+        fun create(context: Context): GymDatabase = Room.databaseBuilder(context, GymDatabase::class.java, "gym_app.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build()
+    }
+}
+
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS exercise_progressions (exerciseId TEXT NOT NULL, setIndex INTEGER NOT NULL, sourceSessionId TEXT NOT NULL, referenceLoadKg REAL, PRIMARY KEY(exerciseId, setIndex))")
+        // Carry forward the latest recorded + per exercise/series without editing historical sets.
+        db.execSQL("""
+            INSERT OR IGNORE INTO exercise_progressions (exerciseId, setIndex, sourceSessionId, referenceLoadKg)
+            SELECT ss.exerciseId, ss.setIndex, ss.sessionId, ss.loadKg
+            FROM session_sets ss JOIN workout_sessions ws ON ws.id = ss.sessionId
+            WHERE ss.completed = 1 AND ss.increaseMarked = 1 AND NOT EXISTS (
+                SELECT 1 FROM session_sets newer JOIN workout_sessions nw ON nw.id = newer.sessionId
+                WHERE newer.exerciseId = ss.exerciseId AND newer.setIndex = ss.setIndex AND newer.completed = 1
+                AND (nw.startedAt > ws.startedAt OR (nw.startedAt = ws.startedAt AND newer.rowid > ss.rowid))
+            )
+        """.trimIndent())
     }
 }
 

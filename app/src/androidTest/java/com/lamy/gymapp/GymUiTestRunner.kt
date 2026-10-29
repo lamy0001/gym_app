@@ -13,23 +13,34 @@ import java.time.LocalDate
 
 /** Run only against a separate application ID so tests cannot modify a user's training data. */
 class GymUiTestRunner : Instrumentation() {
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); start() }
+    private var migrationOnly = false
+    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); migrationOnly = arguments?.getString("migrationOnly") == "true"; start() }
 
     override fun onStart() {
         val report = StringBuilder()
         try {
             check(targetContext.packageName.endsWith(".validation")) { "Use -PqaApplicationId=com.lamy.gymapp.validation" }
+            verifyLegacyMigration()
+            report.append("PASS: legacy + migration keeps latest intentions and preserves historical rows\n")
             val database = GymDatabase.create(targetContext)
+            if (migrationOnly) {
+                val counts = runBlocking { "${database.dao().allSessions().size} sessions, ${database.dao().allSessionSets().size} sets, ${database.dao().allProgressions().size} progressions" }
+                database.close()
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: Room migration validates full schema: $counts\n") })
+                return
+            }
             runBlocking {
                 val dao = database.dao()
                 dao.seedIfEmpty()
                 dao.ensureCatalog()
                 dao.deactivatePeriods()
                 dao.insertPeriod(TrainingPeriodEntity("qa-period", "Validação QA", 0L))
-                dao.insertWorkouts(listOf(WorkoutEntity("qa-workout", "Teste de interação", "Somente validação", 1)))
+                dao.insertWorkouts(listOf(WorkoutEntity("qa-workout", "Teste de interação", "Somente validação", 1), WorkoutEntity("qa-workout-2", "Outro treino", "Mesmo exercício", 2)))
                 dao.insertPeriodLink(WorkoutPeriodLinkEntity("qa-workout", "qa-period"))
+                dao.insertPeriodLink(WorkoutPeriodLinkEntity("qa-workout-2", "qa-period"))
                 dao.insertExercises(listOf(ExerciseEntity("qa-exercise", "Exercício de validação", "Teste"), ExerciseEntity("qa-single", "Exercício de uma série", "Teste")))
                 dao.insertWorkoutExercises(listOf(WorkoutExerciseEntity("qa-workout", "qa-exercise", 1, 30, "10–12", 2, "10,15"), WorkoutExerciseEntity("qa-workout", "qa-single", 2, 30, "12", 1, "7")))
+                dao.insertWorkoutExercises(listOf(WorkoutExerciseEntity("qa-workout-2", "qa-exercise", 1, 30, "10–12", 2, "99,99")))
                 dao.saveSetting(AppSettingEntity("remindersEnabled", "false"))
             }
             val activity = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -55,6 +66,12 @@ class GymUiTestRunner : Instrumentation() {
             waitUntil { !checkNode("Marcar série 2").isChecked }
             tapDescription("Marcar todas as séries de Exercício de validação")
             waitUntil { find { it.contentDescription?.toString() == "Marcar série 2" } == null }
+            tapDescription("Desmarcar todas as séries de Exercício de validação")
+            waitUntil { find { it.contentDescription?.toString() == "Marcar série 2" } != null }
+            check(!checkNode("Marcar série 1").isChecked && !checkNode("Marcar série 2").isChecked)
+            screenshot("bulk-unchecked")
+            tapDescription("Marcar todas as séries de Exercício de validação")
+            waitUntil { find { it.contentDescription?.toString() == "Marcar série 2" } == null }
             tapDescription("Abrir ou fechar Exercício de validação")
             waitUntil { find { it.contentDescription?.toString() == "Marcar série 2" } != null }
             check(checkNode("Marcar série 1").isChecked && checkNode("Marcar série 2").isChecked)
@@ -68,6 +85,38 @@ class GymUiTestRunner : Instrumentation() {
             waitNode { it.text?.toString() == "Finalizar treino" }
             check(runBlocking { database.dao().allSessionSets().filter { it.exerciseId == "qa-exercise" }.all { it.completed } })
             report.append("PASS: active session and series survive activity reopening\n")
+
+            tapDescription("Desmarcar todas as séries de Exercício de validação")
+            waitUntil { find { it.contentDescription?.toString() == "Marcar série 2" } != null }
+            tapDescription("Aumentar carga na próxima vez, série 1")
+            waitNode { it.text?.toString() == "↑ Aumentar na próxima vez" }
+            screenshot("progression-current")
+            tapDescription("Marcar todas as séries de Exercício de validação")
+            waitUntil { find { it.contentDescription?.toString() == "Marcar série 2" } == null }
+            tapDescription("Desmarcar todas as séries de Exercício de validação")
+            waitUntil { find { it.contentDescription?.toString() == "Marcar série 2" } != null }
+            check(checkNode("Aumentar carga na próxima vez, série 1").isChecked)
+            check(runBlocking { database.dao().progression("qa-exercise", 1) != null })
+            tapText("Finalizar treino")
+            waitUntil { runBlocking { database.dao().allSettings().none { it.key == "active_session_id" } } }
+            tapText("Meus treinos")
+            tapText("Treino 2 · Outro treino")
+            waitNode { it.text?.toString() == "↑ Aumentar carga" }
+            check(find { it.isEditable && it.text?.toString() == "12.5" } != null)
+            check(!checkNode("Marcar série 1").isChecked)
+            screenshot("progression-next-workout")
+            tapText("Iniciar treino")
+            waitNode { it.text?.toString() == "Finalizar treino" }
+            tapDescription("Marcar todas as séries de Exercício de validação")
+            waitUntil { find { it.contentDescription?.toString() == "Marcar série 2" } == null }
+            tapDescription("Desmarcar todas as séries de Exercício de validação")
+            waitNode { it.text?.toString() == "↑ Aumentar carga" }
+            check(runBlocking { database.dao().progression("qa-exercise", 1) != null })
+            val nextField = waitNode { it.isEditable && it.text?.toString() == "12.5" }
+            nextField.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "14") })
+            waitUntil { runBlocking { database.dao().progression("qa-exercise", 1) == null } }
+            waitUntil { find { it.text?.toString() == "↑ Aumentar carga" } == null }
+            report.append("PASS: reversible bulk action preserves +; progression and load cross workouts; higher load resolves reminder\n")
 
             sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
             tapDescription("Configurações")
@@ -107,6 +156,37 @@ class GymUiTestRunner : Instrumentation() {
         } catch (error: Throwable) {
             finish(Activity.RESULT_CANCELED, Bundle().apply { putString("stream", report.toString() + "FAIL: " + error.stackTraceToString()) })
         }
+    }
+
+    private fun verifyLegacyMigration() {
+        val helper = androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory().create(
+            androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(targetContext).name(null)
+                .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(1) {
+                    override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                        db.execSQL("CREATE TABLE workout_sessions (id TEXT, startedAt INTEGER)")
+                        db.execSQL("CREATE TABLE session_sets (id TEXT, sessionId TEXT, exerciseId TEXT, setIndex INTEGER, loadKg REAL, completed INTEGER, increaseMarked INTEGER)")
+                        db.execSQL("INSERT INTO workout_sessions VALUES ('old', 1), ('new', 2)")
+                        db.execSQL("INSERT INTO session_sets VALUES ('a', 'old', 'e', 1, 8, 1, 1), ('b', 'old', 'e', 2, 6, 1, 1), ('c', 'new', 'e', 2, 7, 1, 0), ('d', 'old', 'e', 3, 5, 1, 1), ('f', 'new', 'e', 3, 6, 0, 0)")
+                    }
+                    override fun onUpgrade(db: androidx.sqlite.db.SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+                }).build())
+        try {
+            val db = helper.writableDatabase
+            MIGRATION_5_6.migrate(db)
+            db.query("SELECT setIndex FROM exercise_progressions ORDER BY setIndex").use { cursor ->
+                val indexes = mutableListOf<Int>()
+                while (cursor.moveToNext()) indexes += cursor.getInt(0)
+                check(indexes == listOf(1, 3))
+            }
+            db.query("SELECT COUNT(*) FROM session_sets").use { check(it.moveToFirst() && it.getInt(0) == 5) }
+        } finally { helper.close() }
+    }
+
+    private fun screenshot(name: String) {
+        SystemClock.sleep(300)
+        val bitmap = uiAutomation.takeScreenshot() ?: error("Screenshot unavailable")
+        java.io.File(targetContext.getExternalFilesDir(null), "$name.png").outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
     }
 
     private fun find(predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {

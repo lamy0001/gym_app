@@ -19,11 +19,17 @@ android {
         testInstrumentationRunner = "com.lamy.gymapp.GymUiTestRunner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.2.9"
+        versionCode = 12
+        versionName = "0.2.10"
     }
 
     buildFeatures { compose = true }
+
+    signingConfigs.getByName("debug") {
+        val localKey = rootProject.file(".toolchain/signing/debug.keystore")
+        val configuredKey = System.getenv("GYM_SIGNING_KEYSTORE")?.let { file(it) } ?: localKey
+        if (configuredKey.exists()) storeFile = configuredKey
+    }
 }
 
 kotlin {

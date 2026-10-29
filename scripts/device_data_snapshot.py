@@ -10,10 +10,17 @@ parser = argparse.ArgumentParser()
 parser.add_argument("destination", type=Path)
 parser.add_argument("--serial", required=True)
 parser.add_argument("--package", default="com.lamy.gymapp")
+parser.add_argument("--adb", type=Path, default=Path(".toolchain/android-sdk/platform-tools/adb.exe"))
+parser.add_argument("--full-app", action="store_true", help="Also archive databases, files, shared preferences and no_backup while the app is stopped")
 args = parser.parse_args()
-adb = str(Path(".toolchain/android-sdk/platform-tools/adb.exe").resolve())
+adb = str(args.adb.resolve())
 command = [adb, "-s", args.serial]
 args.destination.mkdir(parents=True, exist_ok=True)
+if args.full_app:
+    directories = subprocess.check_output(command + ["shell", "run-as", args.package, "ls"], text=True).split()
+    selected = [name for name in ("databases", "files", "shared_prefs", "no_backup") if name in directories]
+    archive = subprocess.check_output(command + ["exec-out", "run-as", args.package, "tar", "-cf", "-"] + selected)
+    (args.destination / "app-data.tar").write_bytes(archive)
 names = subprocess.check_output(command + ["shell", "run-as", args.package, "ls", "databases"], text=True).split()
 for name in names:
     if name.startswith("gym_app.db"):
